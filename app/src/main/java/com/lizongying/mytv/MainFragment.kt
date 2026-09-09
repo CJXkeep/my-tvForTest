@@ -18,12 +18,12 @@ import androidx.leanback.widget.Presenter
 import androidx.leanback.widget.Row
 import androidx.leanback.widget.RowPresenter
 import androidx.lifecycle.lifecycleScope
-import com.lizongying.mytv.api.YSP
 import com.lizongying.mytv.models.ProgramType
 import com.lizongying.mytv.models.TVListViewModel
 import com.lizongying.mytv.models.TVViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainFragment : BrowseSupportFragment() {
 
@@ -72,12 +72,26 @@ class MainFragment : BrowseSupportFragment() {
     override fun onActivityCreated(savedInstanceState: Bundle?) {
         super.onActivityCreated(savedInstanceState)
 
-        activity?.let { YSP.init(it) }
+        // 频道源涉及网络加载（远程订阅），先在 IO 线程取回数据再构建 UI
+        lifecycleScope.launch {
+            val list = withContext(Dispatchers.IO) { TVList.load() }
+            loadRows(list)
 
-        loadRows()
+            // EPG：订阅源自带 x-tvg-url（按加载顺序）+ 设置里的地址，逐试
+            EpgStore.initCache(requireContext())
+            EpgStore.updateAsync(
+                TVList.epgUrls + listOfNotNull(SP.epgUrl.takeIf { it.isNotBlank() })
+            )
 
-        setupEventListeners()
+            setupEventListeners()
 
+            registerChannelObservers()
+
+            (activity as MainActivity).fragmentReady("MainFragment")
+        }
+    }
+
+    private fun registerChannelObservers() {
         tvListViewModel.tvListViewModel.value?.forEach { tvViewModel ->
             tvViewModel.errInfo.observe(viewLifecycleOwner) { _ ->
                 if (tvViewModel.errInfo.value != null
@@ -114,6 +128,11 @@ class MainFragment : BrowseSupportFragment() {
                     } else {
                         if (check(tvViewModel)) {
                             (activity as? MainActivity)?.play(tvViewModel)
+                            (activity as? MainActivity)?.hideListAndPlay()
+                            val epg = EpgStore.find(tvViewModel.getTV().title)
+                            if (epg.isNotEmpty()) {
+                                tvViewModel.addDirectEPG(epg)
+                            }
                             (activity as? MainActivity)?.showInfoFragment(tvViewModel)
                             setSelectedPosition(
                                 tvViewModel.getRowPosition(), true,
@@ -124,8 +143,6 @@ class MainFragment : BrowseSupportFragment() {
                 }
             }
         }
-
-        (activity as MainActivity).fragmentReady("MainFragment")
     }
 
     fun toLastPosition() {
@@ -145,13 +162,13 @@ class MainFragment : BrowseSupportFragment() {
     override fun startHeadersTransition(withHeaders: Boolean) {
     }
 
-    private fun loadRows() {
+    private fun loadRows(list: Map<String, List<TV>>) {
         rowsAdapter = ArrayObjectAdapter(ListRowPresenter())
 
         val cardPresenter = CardPresenter(context!!)
 
         var idx: Long = 0
-        for ((k, v) in TVList.list) {
+        for ((k, v) in list) {
             val listRowAdapter = ArrayObjectAdapter(cardPresenter)
             for ((idx2, v1) in v.withIndex()) {
                 val tvViewModel = TVViewModel(v1)
@@ -178,14 +195,12 @@ class MainFragment : BrowseSupportFragment() {
     fun prevSource() {
         view?.post {
             val tvViewModel = tvListViewModel.getTVViewModel(itemPosition)
-            if (tvViewModel != null) {
-                if (tvViewModel.videoUrl.value!!.size > 1) {
-                    val videoIndex = tvViewModel.videoIndex.value?.minus(1)
-                    if (videoIndex == -1) {
-                        tvViewModel.setVideoIndex(tvViewModel.videoUrl.value!!.size - 1)
-                    }
-                    tvViewModel.changed()
-                }
+            if (tvViewModel != null && (tvViewModel.videoUrl.value?.size ?: 0) > 1) {
+                val size = tvViewModel.videoUrl.value!!.size
+                val idx = ((tvViewModel.videoIndex.value ?: 0) - 1 + size) % size
+                tvViewModel.setVideoIndex(idx)
+                showSourceToast(tvViewModel, idx, size)
+                tvViewModel.changed()
             }
         }
     }
@@ -193,16 +208,23 @@ class MainFragment : BrowseSupportFragment() {
     fun nextSource() {
         view?.post {
             val tvViewModel = tvListViewModel.getTVViewModel(itemPosition)
-            if (tvViewModel != null) {
-                if (tvViewModel.videoUrl.value!!.size > 1) {
-                    val videoIndex = tvViewModel.videoIndex.value?.plus(1)
-                    if (videoIndex == tvViewModel.videoUrl.value!!.size) {
-                        tvViewModel.setVideoIndex(0)
-                    }
-                    tvViewModel.changed()
-                }
+            if (tvViewModel != null && (tvViewModel.videoUrl.value?.size ?: 0) > 1) {
+                val size = tvViewModel.videoUrl.value!!.size
+                val idx = ((tvViewModel.videoIndex.value ?: 0) + 1) % size
+                tvViewModel.setVideoIndex(idx)
+                showSourceToast(tvViewModel, idx, size)
+                tvViewModel.changed()
             }
         }
+    }
+
+    /** 线路切换提示：频道名 + 当前线路序号 */
+    private fun showSourceToast(tvViewModel: TVViewModel, index: Int, size: Int) {
+        Toast.makeText(
+            context,
+            "${tvViewModel.getTV().title} 线路 ${index + 1}/$size",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     private fun setupEventListeners() {
@@ -256,6 +278,18 @@ class MainFragment : BrowseSupportFragment() {
         return true
     }
 
+    /** 当前播放/选中的频道 */
+    fun getCurrentTVViewModel(): TVViewModel? {
+        return tvListViewModel.getTVViewModel(itemPosition)
+    }
+
+    /** 按 tvg-chno 精确匹配频道，返回其 id；无匹配返回 null */
+    fun findByChno(number: Int): Int? {
+        return tvListViewModel.tvListViewModel.value
+            ?.firstOrNull { it.getTV().chno == number }
+            ?.getTV()?.id
+    }
+
     fun fragmentReady() {
         tvListViewModel.getTVViewModel(itemPosition)?.changed()
 
@@ -300,16 +334,12 @@ class MainFragment : BrowseSupportFragment() {
 
     private fun updateEPG(tvViewModel: TVViewModel) {
         when (tvViewModel.getTV().programType) {
-            ProgramType.Y_PROTO -> {
-                Request.fetchYProtoEPG(tvViewModel)
-            }
-
-            ProgramType.Y_JCE -> {
-                Request.fetchYJceEPG(tvViewModel)
-            }
-
             ProgramType.F -> {
                 Request.fetchFEPG(tvViewModel)
+            }
+
+            ProgramType.DIRECT -> {
+                // 直连 IPTV 源暂无节目单
             }
         }
     }

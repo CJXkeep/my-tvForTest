@@ -37,6 +37,8 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
 
     private var doubleBackToExitPressedOnce = false
 
+    private var centerLongPressed = false
+
     private lateinit var gestureDetector: GestureDetector
 
     private val handler = Handler()
@@ -60,6 +62,11 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
         setContentView(R.layout.activity_main)
 
         Request.setRequestListener(this)
+
+        // 远程配置保存后刷新频道列表
+        (application as MyApplication).configServer.onConfigChanged = {
+            recreate()
+        }
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
@@ -134,6 +141,16 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
         mainFragment.play(itemPosition)
     }
 
+    /** 数字选台：先按 tvg-chno 精确匹配，无匹配再按列表序号 */
+    fun playByNumber(number: Int) {
+        val id = mainFragment.findByChno(number)
+        if (id != null) {
+            play(id)
+        } else {
+            play(number - 1)
+        }
+    }
+
     fun prev() {
         mainFragment.prev()
     }
@@ -143,11 +160,11 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
     }
 
     private fun prevSource() {
-//        mainFragment.prevSource()
+        mainFragment.prevSource()
     }
 
     private fun nextSource() {
-//        mainFragment.nextSource()
+        mainFragment.nextSource()
     }
 
     fun switchMainFragment() {
@@ -199,6 +216,49 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
                 .hide(mainFragment)
                 .commit()
         }
+    }
+
+    /** 播放时确保频道列表收起 */
+    fun hideListAndPlay() {
+        if (!mainFragment.isHidden) {
+            hideMainFragment()
+        }
+    }
+
+    /** OK 键：短按=切换频道列表，长按=收藏/取消收藏当前频道 */
+    private fun handleCenterKey(keyCode: Int, event: KeyEvent?) {
+        if (event?.action == KeyEvent.ACTION_DOWN) {
+            if (event.repeatCount == 1) {
+                favoriteCurrentChannel()
+                centerLongPressed = true
+            }
+        }
+    }
+
+    private fun favoriteCurrentChannel() {
+        val tvViewModel = mainFragment.getCurrentTVViewModel() ?: return
+        val title = tvViewModel.getTV().title
+        val (added, _) = TVList.toggleFavorite(title)
+        Toast.makeText(
+            this,
+            if (added) "已收藏 $title，置顶显示" else "已取消收藏 $title",
+            Toast.LENGTH_SHORT
+        ).show()
+        // 重新加载频道列表以更新编号
+        recreate()
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+            if (centerLongPressed) {
+                // 长按已处理收藏，抬起时不再切换
+                centerLongPressed = false
+                return true
+            }
+            switchMainFragment()
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
     }
 
     fun fragmentReady(tag: String) {
@@ -280,10 +340,6 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
     }
 
     private fun showSetting() {
-        if (!mainFragment.isHidden) {
-            return
-        }
-
         Log.i(TAG, "settingFragment ${settingFragment.isVisible}")
         if (!settingFragment.isVisible) {
             settingFragment.show(supportFragmentManager, "setting")
@@ -441,11 +497,13 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
             }
 
             KeyEvent.KEYCODE_ENTER -> {
-                switchMainFragment()
+                handleCenterKey(keyCode, event)
+                return true
             }
 
             KeyEvent.KEYCODE_DPAD_CENTER -> {
-                switchMainFragment()
+                handleCenterKey(keyCode, event)
+                return true
             }
 
             KeyEvent.KEYCODE_DPAD_UP -> {
@@ -465,6 +523,11 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
             }
 
             KeyEvent.KEYCODE_DPAD_LEFT -> {
+                if (mainFragment.isHidden && !settingFragment.isVisible) {
+                    // 播放中：左键切换上一条线路
+                    prevSource()
+                    return true
+                }
                 if (!mainFragment.isVisible && !settingFragment.isVisible) {
                     switchMainFragment()
                     return true
@@ -472,10 +535,17 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
             }
 
             KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                if (!mainFragment.isVisible && !settingFragment.isVisible) {
-                    showSetting()
+                if (settingFragment.isVisible) {
                     return true
                 }
+                if (mainFragment.isHidden) {
+                    // 播放中：右键切换下一条线路
+                    nextSource()
+                    return true
+                }
+                // 频道列表打开时：右键打开设置
+                showSetting()
+                return true
             }
         }
 

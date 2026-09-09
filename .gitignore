@@ -15,3 +15,5 @@
 .cxx
 local.properties
 /path/
+*.apk
+.tmp_*

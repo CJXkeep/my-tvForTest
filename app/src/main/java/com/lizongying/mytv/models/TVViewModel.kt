@@ -6,8 +6,6 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import com.lizongying.mytv.TV
 import com.lizongying.mytv.api.FEPG
-import com.lizongying.mytv.proto.Ysp.cn.yangshipin.omstv.common.proto.programModel.Program
-import com.tencent.videolite.android.datamodel.cctvjce.TVProgram
 import java.text.SimpleDateFormat
 import java.util.TimeZone
 
@@ -51,6 +49,45 @@ class TVViewModel(private var tv: TV) : ViewModel() {
 
     var seq = 0
 
+    // ---- 源类型轮换（借鉴 my-tv-0）：HLS / PROGRESSIVE 两级 ----
+    object SourceTypes {
+        const val TYPE_HLS = 0
+        const val TYPE_PROGRESSIVE = 1
+    }
+
+    private var sourceTypes: List<Int> = listOf(SourceTypes.TYPE_HLS, SourceTypes.TYPE_PROGRESSIVE)
+    var sourceTypeIndex = 0
+    private val confirmedTypes = mutableMapOf<String, Int>()
+
+    /** 切换线路/首次播放时重置候选类型；已验证成功的类型优先 */
+    fun resetSourceTypes() {
+        val url = getVideoUrlCurrent()
+        sourceTypes = if (url.substringBefore('?').substringAfterLast('/').contains(".m3u8")) {
+            listOf(SourceTypes.TYPE_HLS, SourceTypes.TYPE_PROGRESSIVE)
+        } else {
+            listOf(SourceTypes.TYPE_PROGRESSIVE, SourceTypes.TYPE_HLS)
+        }
+        sourceTypeIndex = (confirmedTypes[url] ?: 0).coerceIn(0, sourceTypes.lastIndex)
+    }
+
+    /** 还有下一个候选类型返回 true 并推进 */
+    fun nextSourceType(): Boolean {
+        return if (sourceTypeIndex < sourceTypes.lastIndex) {
+            sourceTypeIndex++
+            true
+        } else {
+            false
+        }
+    }
+
+    /** 播放成功后记忆该地址可用的源类型 */
+    fun confirmSourceType() {
+        confirmedTypes[getVideoUrlCurrent()] = sourceTypeIndex
+    }
+
+    val currentSourceType: Int
+        get() = sourceTypes[sourceTypeIndex]
+
     fun addVideoUrl(url: String) {
         if (_videoUrl.value?.isNotEmpty() == true) {
             if (_videoUrl.value!!.last().contains("cctv.cn")) {
@@ -74,6 +111,17 @@ class TVViewModel(private var tv: TV) : ViewModel() {
         }
     }
 
+    /** 轮转到下一条线路（循环），用于播放出错时自动换源 */
+    fun nextSource() {
+        val size = _videoUrl.value?.size ?: return
+        if (size > 1) {
+            val next = ((videoIndex.value ?: 0) + 1) % size
+            setVideoIndex(next)
+            resetSourceTypes()
+            allReady()
+        }
+    }
+
     fun changed() {
         _change.value = true
     }
@@ -88,7 +136,8 @@ class TVViewModel(private var tv: TV) : ViewModel() {
 
     init {
         _videoUrl.value = tv.videoUrl
-        _videoIndex.value = tv.videoUrl.lastIndex
+        // 多线路频道（折叠后）从第一条（优选）线路开始播放
+        _videoIndex.value = if (tv.videoUrl.isNotEmpty()) 0 else -1
     }
 
     fun getRowPosition(): Int {
@@ -115,14 +164,6 @@ class TVViewModel(private var tv: TV) : ViewModel() {
         return tv
     }
 
-    fun addYJceEPG(p: MutableList<TVProgram>) {
-        _epg.value = p.map { EPG(it.name, it.start_time_stamp.toInt()) }.toMutableList()
-    }
-
-    fun addYEPG(p: MutableList<Program>) {
-        _epg.value = p.map { EPG(it.name, it.st.toInt()) }.toMutableList()
-    }
-
     private fun formatFTime(s: String): Int {
         val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss")
         dateFormat.timeZone = TimeZone.getTimeZone("UTC")
@@ -135,6 +176,13 @@ class TVViewModel(private var tv: TV) : ViewModel() {
 
     fun addFEPG(p: List<FEPG>) {
         _epg.value = p.map { EPG(it.title, formatFTime(it.event_time)) }.toMutableList()
+    }
+
+    /** 直连频道的 XMLTV 节目单 */
+    fun addDirectEPG(p: List<EPG>) {
+        if (p.isNotEmpty()) {
+            _epg.value = p.toMutableList()
+        }
     }
 
     fun getVideoUrlCurrent(): String {

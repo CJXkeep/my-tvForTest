@@ -15,6 +15,8 @@ data class TV(
     var programType: ProgramType,
     var needToken: Boolean = false,
     var mustToken: Boolean = false,
+    var chno: Int = 0,
+    var headers: Map<String, String> = emptyMap(),
 
     ) : Serializable {
 

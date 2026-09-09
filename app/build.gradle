@@ -18,26 +18,6 @@ android {
         versionCode VersionCode()
         versionName VersionName()
 
-        // This block is different from the one you use to link Gradle
-        // to your CMake or ndk-build script.
-        externalNativeBuild {
-
-            // For ndk-build, instead use the ndkBuild block.
-            cmake {
-                arguments "-DIS_SO_BUILD=${project.hasProperty('IS_SO_BUILD') ? project.IS_SO_BUILD : true}"
-
-                abiFilters "armeabi-v7a", "arm64-v8a"
-            }
-        }
-
-        // Similar to other properties in the defaultConfig block,
-        // you can configure the ndk block for each product flavor
-        // in your build configuration.
-        ndk {
-            // Specifies the ABI configurations of your native
-            // libraries Gradle should build and package with your app.
-            abiFilters "armeabi-v7a", "arm64-v8a"
-        }
         multiDexEnabled true
     }
 
@@ -56,17 +36,6 @@ android {
     kotlinOptions {
         jvmTarget = 17
     }
-
-    // Encapsulates your external native build configurations.
-    externalNativeBuild {
-
-        // Encapsulates your CMake build configurations.
-        cmake {
-
-            // Provides a relative path to your CMake build script.
-            path = file("CMakeLists.txt")
-        }
-    }
 }
 
 static def VersionCode() {
@@ -74,13 +43,17 @@ static def VersionCode() {
         def p = "git describe --tags --always"
         def process = p.execute()
         process.waitFor()
+        def text = process.text.trim()
+        if (!text) {
+            return 21000
+        }
         def replace = [v: "", ".": " ", "-": " "]
-        def arr = (process.text.trim().replace(replace) + " 0").split(" ")
+        def arr = (text.replace(replace) + " 0").split(" ")
         def versionCode = arr[0].toInteger() * 16777216 + arr[1].toInteger() * 65536 + arr[2].toInteger() * 256 + arr[3].toInteger()
         println("VersionCode $versionCode")
         return versionCode
     } catch (ignored) {
-        return 0
+        return 21000
     }
 }
 
@@ -88,9 +61,10 @@ static def VersionName() {
     try {
         def process = "git describe --tags --always".execute()
         process.waitFor()
-        return process.text.trim() - "v"
+        def text = process.text.trim() - "v"
+        return text ?: "2.1.0"
     } catch (ignored) {
-        return "1.0.0"
+        return "2.1.0"
     }
 }
 
@@ -105,12 +79,12 @@ dependencies {
     // For HLS playback support with ExoPlayer
     implementation "androidx.media3:media3-exoplayer-hls:$media3_version"
 
+    // 注：FLV/TS 等渐进式流格式已内置于 media3-exoplayer 核心模块
+
     // 21:2.11.0 17:2.6.4
     def retrofit2_version = "2.11.0"
 
-    implementation 'com.google.protobuf:protobuf-kotlin:3.25.1'
     implementation "com.squareup.retrofit2:converter-gson:$retrofit2_version"
-    implementation "com.squareup.retrofit2:converter-protobuf:$retrofit2_version"
     implementation "com.squareup.retrofit2:retrofit:$retrofit2_version"
 
     implementation 'androidx.leanback:leanback:1.2.0-alpha04'
@@ -120,8 +94,10 @@ dependencies {
     implementation 'androidx.core:core-ktx:1.13.0'
     implementation "androidx.lifecycle:lifecycle-runtime-ktx:2.7.0"
 
-    implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2"
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0-RC")
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0-RC"
+
+    // 局域网远程配置服务
+    implementation "org.nanohttpd:nanohttpd:2.3.1"
 
     implementation 'com.google.android.exoplayer:exoplayer-ui:2.13.3'
     implementation 'com.google.android.exoplayer:exoplayer-core:2.13.3'

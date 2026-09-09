@@ -26,6 +26,15 @@ object SP {
     // guid
     private const val KEY_GUID = "guid"
 
+    // IPTV 数据源订阅地址
+    private const val KEY_IPTV_SOURCE_URL = "iptv_source_url"
+
+    // 收藏频道（归一化名，逗号分隔，靠前的排更前）
+    private const val KEY_FAVORITES = "favorites"
+
+    // EPG 节目单地址（XMLTV，留空则用订阅源自带的 x-tvg-url）
+    private const val KEY_EPG_URL = "epg_url"
+
     private lateinit var sp: SharedPreferences
 
     /**
@@ -62,4 +71,16 @@ object SP {
     var guid: String
         get() = sp.getString(KEY_GUID, "") ?: ""
         set(value) = sp.edit().putString(KEY_GUID, value).apply()
+
+    var iptvSourceUrl: String
+        get() = sp.getString(KEY_IPTV_SOURCE_URL, "") ?: ""
+        set(value) = sp.edit().putString(KEY_IPTV_SOURCE_URL, value).apply()
+
+    var favorites: String
+        get() = sp.getString(KEY_FAVORITES, "") ?: ""
+        set(value) = sp.edit().putString(KEY_FAVORITES, value).apply()
+
+    var epgUrl: String
+        get() = sp.getString(KEY_EPG_URL, "") ?: ""
+        set(value) = sp.edit().putString(KEY_EPG_URL, value).apply()
 }

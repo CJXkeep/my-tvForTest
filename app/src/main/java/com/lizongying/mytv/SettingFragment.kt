@@ -5,6 +5,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.fragment.app.DialogFragment
 import com.lizongying.mytv.databinding.SettingBinding
 
@@ -13,8 +14,6 @@ class SettingFragment : DialogFragment() {
 
     private var _binding: SettingBinding? = null
     private val binding get() = _binding!!
-
-    private lateinit var updateManager: UpdateManager
 
     override fun onStart() {
         super.onStart()
@@ -37,7 +36,13 @@ class SettingFragment : DialogFragment() {
         val context = requireContext() // It‘s safe to get context here.
         _binding = SettingBinding.inflate(inflater, container, false)
         binding.versionName.text = "当前版本: v${context.appVersionName}"
-        binding.version.text = "https://github.com/lizongying/my-tv"
+        binding.version.text = "数据源支持 M3U/TXT/JSON 订阅"
+
+        val ip = ConfigServer.lanIp()
+        binding.remoteConfig.text =
+            if (ip != null) "远程配置: http://$ip:${ConfigServer.PORT}" else "远程配置: 未连接局域网"
+
+        binding.iptvSource.setText(SP.iptvSourceUrl)
 
         binding.switchChannelReversal.run {
             isChecked = SP.channelReversal
@@ -71,36 +76,24 @@ class SettingFragment : DialogFragment() {
             }
         }
 
-        updateManager = UpdateManager(context, this, context.appVersionCode)
-        binding.checkVersion.setOnClickListener(
-            OnClickListenerCheckVersion(
-                activity as MainActivity,
-                updateManager
-            )
-        )
+        binding.saveSource.setOnClickListener {
+            val url = binding.iptvSource.text.toString().trim()
+            if (url != SP.iptvSourceUrl) {
+                SP.iptvSourceUrl = url
+                // 换源后频道编号空间变化，重置选台位置
+                SP.itemPosition = 0
+                Toast.makeText(context, "数据源已保存，正在重新加载", Toast.LENGTH_SHORT).show()
+                requireActivity().recreate()
+            } else {
+                (activity as MainActivity).settingDelayHide()
+            }
+        }
 
         binding.exit.setOnClickListener{
             requireActivity().finishAffinity()
         }
 
         return binding.root
-    }
-
-    fun setVersionName(versionName: String) {
-        if (_binding != null) {
-            binding.versionName.text = versionName
-        }
-    }
-
-    internal class OnClickListenerCheckVersion(
-        private val mainActivity: MainActivity,
-        private val updateManager: UpdateManager
-    ) :
-        View.OnClickListener {
-        override fun onClick(view: View?) {
-            mainActivity.settingDelayHide()
-            updateManager.checkAndUpdate()
-        }
     }
 
     override fun onDestroyView() {
@@ -112,4 +105,3 @@ class SettingFragment : DialogFragment() {
         const val TAG = "SettingFragment"
     }
 }
-
