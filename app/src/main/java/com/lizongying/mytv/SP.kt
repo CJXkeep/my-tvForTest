@@ -83,4 +83,26 @@ object SP {
     var epgUrl: String
         get() = sp.getString(KEY_EPG_URL, "") ?: ""
         set(value) = sp.edit().putString(KEY_EPG_URL, value).apply()
+
+    // 软解码优先（兼容部分设备硬解花屏/无声）
+    private const val KEY_SOFT_DECODE = "soft_decode"
+
+    var softDecode: Boolean
+        get() = sp.getBoolean(KEY_SOFT_DECODE, false)
+        set(value) = sp.edit().putBoolean(KEY_SOFT_DECODE, value).apply()
+
+    /** 恢复默认：重置各项设置开关与缓存，保留订阅源与收藏（用户配置数据） */
+    fun reset() {
+        sp.edit()
+            .remove(KEY_CHANNEL_REVERSAL)
+            .remove(KEY_CHANNEL_NUM)
+            .remove(KEY_TIME)
+            .remove(KEY_BOOT_STARTUP)
+            .remove(KEY_GRID)
+            .remove(KEY_POSITION)
+            .remove(KEY_GUID)
+            .remove(KEY_EPG_URL)
+            .remove(KEY_SOFT_DECODE)
+            .apply()
+    }
 }

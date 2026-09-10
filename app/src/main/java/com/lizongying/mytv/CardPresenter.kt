@@ -33,7 +33,7 @@ class CardPresenter(
 
         cardView.mainImageView?.let {
             Glide.with(viewHolder.view.context)
-                .load(tvViewModel.getTV().logo)
+                .load(logoUrl(tvViewModel))
                 .centerInside()
                 .into(it)
         }
@@ -66,6 +66,15 @@ class CardPresenter(
     override fun onUnbindViewHolder(viewHolder: ViewHolder) {
         val cardView = viewHolder.view as ImageCardView
         cardView.mainImage = null
+    }
+
+    /** LOGO 地址：源未提供时用 fanmingming 图标库兜底（Glide 自带磁盘缓存） */
+    private fun logoUrl(tvViewModel: TVViewModel): Any {
+        val logo = tvViewModel.getTV().logo
+        val s = logo?.toString() ?: ""
+        if (s.isNotBlank() && s != "null") return logo
+        val name = TVList.canonicalName(tvViewModel.getTV().title)
+        return "https://live.fanmingming.cn/tv/$name.png"
     }
 
     companion object {

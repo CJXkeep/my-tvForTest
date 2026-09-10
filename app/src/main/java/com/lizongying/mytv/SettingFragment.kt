@@ -89,6 +89,30 @@ class SettingFragment : DialogFragment() {
             }
         }
 
+        binding.switchSoftDecode.run {
+            isChecked = SP.softDecode
+            setOnCheckedChangeListener { _, isChecked ->
+                SP.softDecode = isChecked
+                Toast.makeText(
+                    context,
+                    if (isChecked) "已开启软解优先，重启应用生效" else "已关闭软解优先，重启应用生效",
+                    Toast.LENGTH_SHORT
+                ).show()
+                (activity as MainActivity).settingDelayHide()
+            }
+        }
+
+        binding.resetAll.setOnClickListener {
+            SP.reset()
+            // 清理 EPG 缓存
+            try {
+                java.io.File(context.filesDir, "epg_cache.json").delete()
+            } catch (_: Exception) {
+            }
+            Toast.makeText(context, "已恢复默认设置", Toast.LENGTH_SHORT).show()
+            requireActivity().recreate()
+        }
+
         binding.exit.setOnClickListener{
             requireActivity().finishAffinity()
         }

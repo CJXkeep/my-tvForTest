@@ -32,6 +32,9 @@ class MyApplication : Application() {
         } catch (e: Exception) {
             Log.e("MyApplication", "config server start failed: ${e.message}")
         }
+
+        // 崩溃日志本地化
+        Thread.setDefaultUncaughtExceptionHandler(CrashHandler(this))
     }
 
     override fun onTerminate() {

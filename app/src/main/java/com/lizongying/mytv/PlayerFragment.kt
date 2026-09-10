@@ -19,6 +19,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
@@ -71,7 +72,13 @@ class PlayerFragment : Fragment(), SurfaceHolder.Callback {
                         .setReadTimeoutMs(8000)
                     val dataSourceFactory = DefaultDataSource.Factory(it, httpDataSourceFactory)
                     mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
-                    ExoPlayer.Builder(it)
+                    val renderersFactory = DefaultRenderersFactory(it).apply {
+                        if (SP.softDecode) {
+                            // 软解码优先：优先选择软件编解码器，兼容部分设备硬解花屏/无声
+                            setMediaCodecSelector(softwareFirstSelector)
+                        }
+                    }
+                    ExoPlayer.Builder(it, renderersFactory)
                         .setMediaSourceFactory(mediaSourceFactory!!)
                         .build()
                 }
@@ -244,6 +251,19 @@ class PlayerFragment : Fragment(), SurfaceHolder.Callback {
 
     companion object {
         private const val TAG = "PlaybackVideoFragment"
+
+        /** 软解码器优先的选择器（c2.android / OMX.google 为软件实现） */
+        @OptIn(UnstableApi::class)
+        private val softwareFirstSelector =
+            androidx.media3.exoplayer.mediacodec.MediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
+                androidx.media3.exoplayer.mediacodec.MediaCodecSelector.DEFAULT
+                    .getDecoderInfos(mimeType, requiresSecureDecoder, requiresTunnelingDecoder)
+                    .sortedByDescending { info ->
+                        if (info.name.startsWith("c2.android") ||
+                            info.name.startsWith("OMX.google")
+                        ) 1 else 0
+                    }
+            }
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {

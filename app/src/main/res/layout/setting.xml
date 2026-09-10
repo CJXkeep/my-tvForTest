@@ -7,14 +7,18 @@
     <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content">
-        <LinearLayout
+        <ScrollView
             android:layout_width="300dp"
-            android:layout_height="match_parent"
-            android:orientation="vertical"
+            android:layout_height="wrap_content"
+            android:maxHeight="600dp"
+            android:background="#FF263238"
             android:paddingTop="20dp"
             android:paddingLeft="7dp"
-            android:paddingRight="7dp"
-            android:background="#FF263238"
+            android:paddingRight="7dp">
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
             >
             <TextView
                 android:layout_width="wrap_content"
@@ -83,6 +87,18 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="5dp"
                 android:text="保存并重新加载" />
+            <Switch
+                android:id="@+id/switch_soft_decode"
+                android:text="软解码优先（花屏/无声时开启）"
+                android:layout_marginTop="5dp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+            <Button
+                android:id="@+id/reset_all"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="5dp"
+                android:text="恢复默认设置" />
             <TextView
                 android:id="@+id/remote_config"
                 android:layout_width="wrap_content"
@@ -91,5 +107,6 @@
                 android:textColor="#8BC34A"
                 android:text="" />
         </LinearLayout>
+        </ScrollView>
     </LinearLayout>
 </FrameLayout>
