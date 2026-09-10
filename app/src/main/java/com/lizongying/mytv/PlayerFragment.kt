@@ -121,6 +121,7 @@ class PlayerFragment : Fragment(), SurfaceHolder.Callback {
                         if (isPlaying) {
                             hideLoading()
                             tvViewModel?.confirmSourceType()
+                            tvViewModel?.resetAttempts()
                             (activity as MainActivity).isPlaying()
                         }
                     }
@@ -135,6 +136,7 @@ class PlayerFragment : Fragment(), SurfaceHolder.Callback {
     fun play(tvViewModel: TVViewModel) {
         this.tvViewModel = tvViewModel
         showLoading()
+        tvViewModel.resetAttempts()
         tvViewModel.resetSourceTypes()
         val player = playerView?.player as? ExoPlayer
         if (player != null) {
@@ -173,11 +175,24 @@ class PlayerFragment : Fragment(), SurfaceHolder.Callback {
         return factory.createMediaSource(item)
     }
 
-    /** 播放失败重试：先轮换源类型，类型穷尽再换线路 */
+    /** 播放失败重试：先轮换源类型，类型穷尽再换线路；达到上限则明确报错停止 */
     @OptIn(UnstableApi::class)
     private fun retryOnError() {
         val vm = tvViewModel ?: return
+
+        // 所有线路轮换两轮仍失败：停止重试，提示用户
+        if (vm.isAttemptExhausted()) {
+            Log.e(TAG, "all sources exhausted: ${vm.getTV().title}")
+            Toast.makeText(
+                context,
+                "${vm.getTV().title} 所有线路均不可用",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
         if (vm.nextSourceType()) {
+            vm.countAttempt()
             Log.i(TAG, "retry sourceType ${vm.sourceTypeIndex}")
             val player = playerView?.player as? ExoPlayer
             player?.setMediaSource(buildMediaSource(vm))
@@ -193,6 +208,10 @@ class PlayerFragment : Fragment(), SurfaceHolder.Callback {
                 Toast.LENGTH_SHORT
             ).show()
             vm.nextSource()
+        } else if (vm.getTV().programType == ProgramType.DIRECT) {
+            // 单线路直连频道：计数后重试
+            vm.countAttempt()
+            vm.changed()
         } else {
             vm.changed()
         }

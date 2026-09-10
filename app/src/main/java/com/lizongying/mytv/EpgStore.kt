@@ -77,9 +77,13 @@ object EpgStore {
         }.start()
     }
 
-    /** 按频道名查找节目单（归一化匹配，纯内存查找） */
-    fun find(title: String): List<EPG> {
-        return if (loaded) epgMap[TVList.canonicalName(title)] ?: emptyList() else emptyList()
+    /** 查找节目单：先按 tvg-id 匹配，再按频道名归一化匹配 */
+    fun find(title: String, tvgId: String = ""): List<EPG> {
+        if (!loaded) return emptyList()
+        if (tvgId.isNotBlank()) {
+            epgMap[TVList.canonicalName(tvgId)]?.let { if (it.isNotEmpty()) return it }
+        }
+        return epgMap[TVList.canonicalName(title)] ?: emptyList()
     }
 
     /** 信任所有证书的客户端（EPG 站点证书混乱，与 ApiClient 同策略） */
@@ -132,6 +136,7 @@ object EpgStore {
         var curStart = 0L
         var curStop = 0L
         var curTitle = ""
+        var curProgrammeChannel = ""
         var inProgramme = false
 
         while (event != XmlPullParser.END_DOCUMENT) {
@@ -149,6 +154,7 @@ object EpgStore {
                             inProgramme = true
                             curStart = parseTime(parser.getAttributeValue(null, "start"))
                             curStop = parseTime(parser.getAttributeValue(null, "stop"))
+                            curProgrammeChannel = parser.getAttributeValue(null, "channel") ?: ""
                             curTitle = ""
                         }
                         "title" -> if (inProgramme && curTitle.isEmpty()) {
@@ -163,6 +169,7 @@ object EpgStore {
                                 val keys = linkedSetOf(
                                     TVList.canonicalName(curDisplayName),
                                     TVList.canonicalName(curChannelId),
+                                    TVList.canonicalName(curProgrammeChannel),
                                 )
                                 for (key in keys) {
                                     if (key.isNotBlank()) {

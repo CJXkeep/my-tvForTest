@@ -155,6 +155,7 @@ object TVList {
         var pendingTitle: String? = null
         var pendingLogo = ""
         var pendingChno = 0
+        var pendingTvgId = ""
         var pendingHeaders: MutableMap<String, String> = mutableMapOf()
 
         // 频道折叠索引：归一化名 -> (分组, 展示名, VM 所在列表)
@@ -181,6 +182,9 @@ object TVList {
                     if (vm.headers.isEmpty() && pendingHeaders.isNotEmpty()) {
                         vm.headers = pendingHeaders.toMap()
                     }
+                    if (vm.tvgId.isEmpty() && pendingTvgId.isNotEmpty()) {
+                        vm.tvgId = pendingTvgId
+                    }
                 }
             } else {
                 folded[key] = group to title
@@ -198,13 +202,15 @@ object TVList {
                         ProgramType.DIRECT,
                         false,
                         chno = pendingChno,
-                        headers = pendingHeaders.toMap()
+                        headers = pendingHeaders.toMap(),
+                        tvgId = pendingTvgId
                     )
                 )
             }
             pendingTitle = null
             pendingLogo = ""
             pendingChno = 0
+            pendingTvgId = ""
             pendingHeaders = mutableMapOf()
         }
 
@@ -225,6 +231,7 @@ object TVList {
                     pendingTitle = line.substringAfterLast(',').trim()
                     pendingLogo = Regex("tvg-logo=\"([^\"]*)\"").find(line)?.groupValues?.get(1) ?: ""
                     pendingChno = Regex("tvg-chno=\"(\\d+)\"").find(line)?.groupValues?.get(1)?.toInt() ?: 0
+                    pendingTvgId = Regex("tvg-id=\"([^\"]*)\"").find(line)?.groupValues?.get(1) ?: ""
                     group = Regex("group-title=\"([^\"]*)\"").find(line)?.groupValues?.get(1)
                         ?.takeIf { it.isNotBlank() } ?: group
                 }

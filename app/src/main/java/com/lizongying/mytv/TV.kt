@@ -17,6 +17,7 @@ data class TV(
     var mustToken: Boolean = false,
     var chno: Int = 0,
     var headers: Map<String, String> = emptyMap(),
+    var tvgId: String = "",
 
     ) : Serializable {
 

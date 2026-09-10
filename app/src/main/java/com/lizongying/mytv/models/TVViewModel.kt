@@ -111,15 +111,35 @@ class TVViewModel(private var tv: TV) : ViewModel() {
         }
     }
 
+    /** 线路轮换尝试次数（重置时机：播放成功 / 切台） */
+    var attemptCount = 0
+        private set
+
+    /** 是否已达轮换上限（线路数 × 2 轮仍失败则放弃，避免死循环） */
+    fun isAttemptExhausted(): Boolean {
+        val size = _videoUrl.value?.size ?: 0
+        return size > 0 && attemptCount >= size * 2
+    }
+
+    fun resetAttempts() {
+        attemptCount = 0
+    }
+
     /** 轮转到下一条线路（循环），用于播放出错时自动换源 */
     fun nextSource() {
         val size = _videoUrl.value?.size ?: return
         if (size > 1) {
+            attemptCount++
             val next = ((videoIndex.value ?: 0) + 1) % size
             setVideoIndex(next)
             resetSourceTypes()
             allReady()
         }
+    }
+
+    /** 源类型轮换也计入尝试次数 */
+    fun countAttempt() {
+        attemptCount++
     }
 
     fun changed() {

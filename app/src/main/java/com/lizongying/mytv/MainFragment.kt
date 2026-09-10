@@ -129,7 +129,10 @@ class MainFragment : BrowseSupportFragment() {
                         if (check(tvViewModel)) {
                             (activity as? MainActivity)?.play(tvViewModel)
                             (activity as? MainActivity)?.hideListAndPlay()
-                            val epg = EpgStore.find(tvViewModel.getTV().title)
+                            val epg = EpgStore.find(
+                                tvViewModel.getTV().title,
+                                tvViewModel.getTV().tvgId,
+                            )
                             if (epg.isNotEmpty()) {
                                 tvViewModel.addDirectEPG(epg)
                             }
