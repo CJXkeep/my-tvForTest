@@ -25,6 +25,9 @@ class MyApplication : Application() {
 //        windowManager.defaultDisplay.getRealMetrics(displayMetrics)
         windowManager.defaultDisplay.getMetrics(displayMetrics)
 
+        // 预生成远程配置访问令牌，保证设置页展示的地址与浏览器访问一致
+        SP.ensureConfigToken()
+
         // 局域网远程配置服务（手机/电脑浏览器访问 http://<设备IP>:34567）
         try {
             configServer.start()

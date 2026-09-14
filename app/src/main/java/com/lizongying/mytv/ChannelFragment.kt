@@ -16,8 +16,12 @@ class ChannelFragment : Fragment() {
 
     private val handler = Handler()
     private val delay: Long = 3000
-    private var channel = 0
-    private var channelCount = 0
+
+    /** 数字输入的累积值 */
+    private var pendingNumber = 0
+
+    /** 数字输入的位数 */
+    private var digitCount = 0
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?,
@@ -64,30 +68,36 @@ class ChannelFragment : Fragment() {
     fun show(tvViewModel: TVViewModel) {
         handler.removeCallbacks(hideRunnable)
         handler.removeCallbacks(playRunnable)
-        val chno = tvViewModel.getTV().chno
-        binding.channelContent.text =
-            (if (chno > 0) chno else tvViewModel.getTV().id.plus(1)).toString()
+        // 编号即列表序号：与左侧列表显示的编号、数字键选台完全一致
+        binding.channelContent.text = (tvViewModel.getTV().id + 1).toString()
         view?.visibility = View.VISIBLE
         handler.postDelayed(hideRunnable, delay)
     }
 
-    fun show(channel: String) {
-        if (channelCount > 1) {
-            return
-        }
-        channelCount++
-        Log.i(TAG, "channelCount ${channelCount}")
-        this.channel = "${this.channel}$channel".toInt()
-        Log.i(TAG, "this.channel ${this.channel}")
+    /**
+     * 数字键选台：累积输入，满位或超时即跳台。
+     * 早期只允许 2 位数字，导致编号 >99 的频道（大源里非常常见）无法用数字键直达。
+     */
+    fun show(digit: String) {
+        if (digitCount >= MAX_DIGITS) return
+        pendingNumber = pendingNumber * 10 + digit.toInt()
+        digitCount++
+        Log.i(TAG, "digit $digit -> $pendingNumber ($digitCount)")
         handler.removeCallbacks(hideRunnable)
         handler.removeCallbacks(playRunnable)
-        if (channelCount < 2) {
-            binding.channelContent.text = "${this.channel}"
-            view?.visibility = View.VISIBLE
-            handler.postDelayed(playRunnable, delay)
-        } else {
-            handler.postDelayed(playRunnable, 0)
+        if (digitCount >= MAX_DIGITS) {
+            playRunnable.run()
+            return
         }
+        binding.channelContent.text = pendingNumber.toString()
+        view?.visibility = View.VISIBLE
+        handler.postDelayed(playRunnable, INPUT_TIMEOUT_MS)
+    }
+
+    /** 清空未完成的数字输入 */
+    private fun resetInput() {
+        pendingNumber = 0
+        digitCount = 0
     }
 
     override fun onResume() {
@@ -101,23 +111,24 @@ class ChannelFragment : Fragment() {
         super.onPause()
         handler.removeCallbacks(hideRunnable)
         handler.removeCallbacks(playRunnable)
+        // 切后台即放弃本次输入：否则回前台后按下的数字会与旧值拼成错误编号
+        resetInput()
     }
 
     private val hideRunnable = Runnable {
         binding.channelContent.text = ""
         view?.visibility = View.GONE
-        channel = 0
-        channelCount = 0
+        resetInput()
         Log.i(TAG, "hideRunnable")
     }
 
     private val playRunnable = Runnable {
-        (activity as MainActivity).playByNumber(channel)
+        val number = pendingNumber
+        resetInput()
         binding.channelContent.text = ""
         view?.visibility = View.GONE
-        channel = 0
-        channelCount = 0
-        Log.i(TAG, "playRunnable")
+        Log.i(TAG, "playRunnable $number")
+        (activity as MainActivity).playByNumber(number)
     }
 
     override fun onDestroyView() {
@@ -127,5 +138,11 @@ class ChannelFragment : Fragment() {
 
     companion object {
         private const val TAG = "ChannelFragment"
+
+        /** 最多允许输入的位数（覆盖 3 位 tvg-chno 与大源里的 4 位列表编号） */
+        private const val MAX_DIGITS = 4
+
+        /** 数字输入等待时间：超时即跳台，1 位与多位手感统一 */
+        private const val INPUT_TIMEOUT_MS = 2000L
     }
 }

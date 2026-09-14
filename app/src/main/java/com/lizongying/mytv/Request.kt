@@ -18,8 +18,12 @@ object Request {
 
     private var tokenFH = ""
 
+    /** 终态失败回调（重试耗尽后触发），生命周期结束需置空避免持有 Activity */
+    private var requestListener: RequestListener? = null
+
     fun onDestroy() {
         Log.i(TAG, "onDestroy")
+        requestListener = null
     }
 
     fun fetchData(tvModel: TVViewModel) {
@@ -58,6 +62,8 @@ object Request {
                     if (tvModel.tokenFHRetryTimes < tvModel.tokenFHRetryMaxTimes) {
                         tvModel.tokenFHRetryTimes++
                         fetchFAuth(tvModel)
+                    } else {
+                        requestListener?.onRequestFinished("$title 拉流失败")
                     }
                 }
             }
@@ -67,6 +73,8 @@ object Request {
                 if (tvModel.tokenFHRetryTimes < tvModel.tokenFHRetryMaxTimes) {
                     tvModel.tokenFHRetryTimes++
                     fetchFAuth(tvModel)
+                } else {
+                    requestListener?.onRequestFinished("$title 网络错误")
                 }
             }
         })
@@ -108,5 +116,6 @@ object Request {
     }
 
     fun setRequestListener(listener: RequestListener) {
+        requestListener = listener
     }
 }

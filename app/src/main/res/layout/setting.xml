@@ -1,112 +1,157 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  设置面板：与选台面板统一风格（深色底、绿色小标题、可聚焦行、主题绿强调色），
+  不再使用系统默认的 Button / Switch，避免与整体观感割裂。
+-->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/dialog"
     android:layout_width="wrap_content"
-    android:layout_height="wrap_content"
-    >
-    <LinearLayout
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content">
-        <ScrollView
-            android:layout_width="300dp"
-            android:layout_height="wrap_content"
-            android:maxHeight="600dp"
-            android:background="#FF263238"
-            android:paddingTop="20dp"
-            android:paddingLeft="7dp"
-            android:paddingRight="7dp">
+    android:layout_height="wrap_content">
+
+    <ScrollView
+        android:layout_width="480dp"
+        android:layout_height="wrap_content"
+        android:background="@drawable/setting_panel_bg"
+        android:maxHeight="462dp"
+        android:paddingStart="22dp"
+        android:paddingTop="16dp"
+        android:paddingEnd="22dp"
+        android:paddingBottom="16dp">
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            >
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/app_name"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="20sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="设置"
+                    android:textColor="#8BC34A"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <TextView
+                style="@style/SettingSection"
+                android:text="远程配置" />
+
+            <TextView
+                android:id="@+id/remote_config"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:singleLine="true"
+                android:textColor="#8AB4F8"
+                android:textSize="15sp" />
+
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/app_name"
-                android:textSize="16sp" />
+                android:layout_marginTop="6dp"
+                android:text="手机或电脑浏览器打开上面的地址，即可配置数据源与 EPG"
+                android:textColor="#99EEEEEE"
+                android:textSize="12sp" />
+
             <TextView
-                android:id="@+id/version"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:text=""
-                />
+                style="@style/SettingSection"
+                android:text="显示与启动" />
+
+            <LinearLayout
+                android:id="@+id/row_time"
+                style="@style/SettingRow">
+
+                <TextView
+                    style="@style/SettingLabel"
+                    android:text="显示时间" />
+
+                <TextView
+                    android:id="@+id/value_time"
+                    style="@style/SettingValue" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/row_boot"
+                style="@style/SettingRow">
+
+                <TextView
+                    style="@style/SettingLabel"
+                    android:text="@string/title_boot_startup" />
+
+                <TextView
+                    android:id="@+id/value_boot"
+                    style="@style/SettingValue" />
+            </LinearLayout>
+
             <TextView
-                android:id="@+id/version_name"
-                android:text=""
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content" />
-            <Button
-                android:id="@+id/exit"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginEnd="10dp"
-                android:text="@string/exit"
-                />
-            <Switch
-                android:id="@+id/switch_channel_reversal"
-                android:text="@string/title_channel_reversal"
-                android:layout_marginTop="5dp"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content" />
-            <Switch
-                android:id="@+id/switch_channel_num"
-                android:text="@string/title_channel_num"
-                android:layout_marginTop="5dp"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content" />
-            <Switch
-                android:id="@+id/switch_time"
-                android:text="@string/title_time"
-                android:layout_marginTop="5dp"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content" />
-            <Switch
-                android:id="@+id/switch_boot_startup"
-                android:text="@string/title_boot_startup"
-                android:layout_marginTop="5dp"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:text="IPTV 数据源（M3U/TXT 订阅地址）" />
+                style="@style/SettingSection"
+                android:text="数据源（M3U / TXT / JSON）" />
+
             <EditText
                 android:id="@+id/iptv_source"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="5dp"
-                android:hint="留空使用内置频道源"
+                android:layout_height="46dp"
+                android:background="@drawable/setting_input_bg"
+                android:hint="留空使用默认源（3 个公开聚合源）"
+                android:nextFocusDown="@+id/row_save"
+                android:nextFocusUp="@+id/row_boot"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
                 android:singleLine="true"
-                android:textSize="12sp" />
-            <Button
-                android:id="@+id/save_source"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="5dp"
-                android:text="保存并重新加载" />
-            <Switch
-                android:id="@+id/switch_soft_decode"
-                android:text="软解码优先（花屏/无声时开启）"
-                android:layout_marginTop="5dp"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content" />
-            <Button
-                android:id="@+id/reset_all"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="5dp"
-                android:text="恢复默认设置" />
+                android:textColor="#FFEEEEEE"
+                android:textColorHint="#607D8B"
+                android:textSize="14sp" />
+
+            <LinearLayout
+                android:id="@+id/row_save"
+                style="@style/SettingRow">
+
+                <TextView
+                    style="@style/SettingLabel"
+                    android:text="保存并重新加载"
+                    android:textColor="#8BC34A" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/row_default"
+                style="@style/SettingRow">
+
+                <TextView
+                    style="@style/SettingLabel"
+                    android:text="恢复默认源" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/row_recheck"
+                style="@style/SettingRow">
+
+                <TextView
+                    style="@style/SettingLabel"
+                    android:text="重新检测线路" />
+            </LinearLayout>
+
             <TextView
-                android:id="@+id/remote_config"
+                android:id="@+id/version_name"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:textColor="#8BC34A"
-                android:text="" />
+                android:layout_marginTop="14dp"
+                android:textColor="#90A4AE"
+                android:textSize="12sp" />
         </LinearLayout>
-        </ScrollView>
-    </LinearLayout>
+    </ScrollView>
 </FrameLayout>

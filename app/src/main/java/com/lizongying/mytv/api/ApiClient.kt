@@ -9,14 +9,12 @@ import okhttp3.TlsVersion
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import javax.net.ssl.SSLContext
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 
 
 class ApiClient {
     private val fUrl = "https://m.fengshows.com/"
 
-    private var okHttpClient = getUnsafeOkHttpClient()
+    private val okHttpClient: OkHttpClient = buildClient()
 
     val fAuthService: FAuthService by lazy {
         Retrofit.Builder()
@@ -53,40 +51,15 @@ class ApiClient {
         return client
     }
 
-    private fun getUnsafeOkHttpClient(): OkHttpClient {
-        try {
-            val trustAllCerts: Array<TrustManager> = arrayOf(
-                object : X509TrustManager {
-                    override fun checkClientTrusted(
-                        chain: Array<out java.security.cert.X509Certificate>?,
-                        authType: String?
-                    ) {
-                    }
-
-                    override fun checkServerTrusted(
-                        chain: Array<out java.security.cert.X509Certificate>?,
-                        authType: String?
-                    ) {
-                    }
-
-                    override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> {
-                        return emptyArray()
-                    }
-                }
-            )
-
-            val sslContext = SSLContext.getInstance("SSL")
-            sslContext.init(null, trustAllCerts, java.security.SecureRandom())
-
-            val builder = OkHttpClient.Builder()
-                .sslSocketFactory(sslContext.socketFactory, trustAllCerts[0] as X509TrustManager)
-                .hostnameVerifier { _, _ -> true }
-                .dns(DnsCache())
-
-            return enableTls12OnPreLollipop(builder).build()
-
-        } catch (e: Exception) {
-            throw RuntimeException(e)
-        }
+    /**
+     * 使用**系统信任链**（不再信任所有证书）。
+     *
+     * 全局 trust-all 会让 HTTPS 失去意义（可被中间人替换内容），这里只保留两件正当的事：
+     * 1. Android 4.4~5.0 默认不带 TLS1.2，显式开启（仍使用系统默认信任管理器）；
+     * 2. DNS 结果短期缓存（CDN 换 IP 后可自愈）。
+     */
+    private fun buildClient(): OkHttpClient {
+        val builder = OkHttpClient.Builder().dns(DnsCache())
+        return enableTls12OnPreLollipop(builder).build()
     }
 }

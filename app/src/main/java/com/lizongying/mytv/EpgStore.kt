@@ -1,6 +1,8 @@
 package com.lizongying.mytv
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -22,7 +24,12 @@ import java.util.TimeZone
  */
 object EpgStore {
     private const val TAG = "EpgStore"
+
+    // 后台线程写入、UI 线程读取，需保证可见性
+    @Volatile
     private var epgMap: Map<String, List<EPG>> = emptyMap()
+
+    @Volatile
     private var loaded = false
 
     fun initCache(context: Context) {
@@ -39,11 +46,16 @@ object EpgStore {
         }
     }
 
-    /** 后台拉取并解析节目单：多地址逐试，直到成功（okhttp 自动跟随跨协议重定向） */
-    fun updateAsync(urls: List<String>) {
-        val candidates = urls.map { it.trim() }.filter { it.isNotBlank() }
-        if (candidates.isEmpty()) return
+    /** 后台拉取并解析节目单：多地址全部尝试并合并，覆盖更全（okhttp 自动跟随跨协议重定向） */
+    fun updateAsync(urls: List<String>, onDone: (() -> Unit)? = null) {
+        val candidates = urls.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (candidates.isEmpty()) {
+            if (onDone != null) Handler(Looper.getMainLooper()).post(onDone)
+            return
+        }
         Thread {
+            val merged = linkedMapOf<String, MutableList<EPG>>()
+            var okCount = 0
             for (url in candidates) {
                 try {
                     val request = okhttp3.Request.Builder()
@@ -51,7 +63,7 @@ object EpgStore {
                         .header("User-Agent", "Mozilla/5.0 (Linux; Android) my-tv")
                         .header("Referer", "https://www.yangshipin.cn/")
                         .build()
-                    trustAllClient().newCall(request).execute().use { resp ->
+                    httpClient.newCall(request).execute().use { resp ->
                         if (!resp.isSuccessful) throw RuntimeException("HTTP ${resp.code()}")
                         val bytes = resp.body()?.bytes() ?: throw RuntimeException("empty body")
                         val gz = resp.request().url().toString().endsWith(".gz")
@@ -60,12 +72,9 @@ object EpgStore {
                         val map = parseXmltv(input)
                         input.close()
                         if (map.isNotEmpty()) {
-                            epgMap = map
-                            loaded = true
-                            Log.i(TAG, "epg loaded: ${map.size} channels from $url, keys=${map.keys.take(5)}")
-                            File(context().filesDir, "epg_cache.json")
-                                .writeText(Gson().toJson(map))
-                            return@use
+                            okCount++
+                            mergeInto(merged, map)
+                            Log.i(TAG, "epg merged: ${map.size} channels from $url")
                         } else {
                             Log.i(TAG, "epg parse EMPTY from $url (bytes=${bytes.size})")
                         }
@@ -74,7 +83,36 @@ object EpgStore {
                     Log.e(TAG, "epg update failed: $url", e)
                 }
             }
+            if (okCount > 0) {
+                merged.forEach { (_, v) -> v.sortBy { it.beginTime } }
+                val result: Map<String, List<EPG>> = merged
+                epgMap = result
+                loaded = true
+                Log.i(TAG, "epg loaded: ${result.size} channels from $okCount/${candidates.size} sources")
+                try {
+                    File(context().filesDir, "epg_cache.json").writeText(Gson().toJson(result))
+                } catch (e: Exception) {
+                    Log.e(TAG, "save epg cache failed", e)
+                }
+            }
+            // 无论成功失败都回调：失败时无需刷新，成功时让列表副标题显示节目名
+            if (onDone != null) Handler(Looper.getMainLooper()).post(onDone)
         }.start()
+    }
+
+    /** 合并多源节目单：同频道按「标题 + 开始时间」去重 */
+    private fun mergeInto(
+        target: LinkedHashMap<String, MutableList<EPG>>,
+        source: Map<String, List<EPG>>,
+    ) {
+        source.forEach { (key, list) ->
+            val dest = target.getOrPut(key) { mutableListOf() }
+            for (e in list) {
+                if (dest.none { it.title == e.title && it.beginTime == e.beginTime }) {
+                    dest.add(e)
+                }
+            }
+        }
     }
 
     /** 查找节目单：先按 tvg-id 匹配，再按频道名归一化匹配 */
@@ -86,34 +124,14 @@ object EpgStore {
         return epgMap[TVList.canonicalName(title)] ?: emptyList()
     }
 
-    /** 信任所有证书的客户端（EPG 站点证书混乱，与 ApiClient 同策略） */
-    private fun trustAllClient(): okhttp3.OkHttpClient {
-        val trustAll = arrayOf<javax.net.ssl.TrustManager>(
-            object : javax.net.ssl.X509TrustManager {
-                override fun checkClientTrusted(
-                    chain: Array<out java.security.cert.X509Certificate>?,
-                    authType: String?
-                ) {
-                }
-
-                override fun checkServerTrusted(
-                    chain: Array<out java.security.cert.X509Certificate>?,
-                    authType: String?
-                ) {
-                }
-
-                override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> =
-                    emptyArray()
-            }
-        )
-        val sslContext = javax.net.ssl.SSLContext.getInstance("SSL")
-        sslContext.init(null, trustAll, java.security.SecureRandom())
-        return okhttp3.OkHttpClient.Builder()
-            .sslSocketFactory(
-                sslContext.socketFactory,
-                trustAll[0] as javax.net.ssl.X509TrustManager
-            )
-            .hostnameVerifier { _, _ -> true }
+    /**
+     * EPG 抓取客户端：使用**系统信任链**（不再信任所有证书），并复用单例。
+     *
+     * 早期是全局 trust-all（注释为"EPG 站点证书混乱"），代价是 HTTPS 形同虚设、可被中间人替换内容；
+     * 且每次抓取都新建一个 client（连接池无法复用）。目标站点均为正规 HTTPS，默认校验即可。
+     */
+    private val httpClient: okhttp3.OkHttpClient by lazy {
+        okhttp3.OkHttpClient.Builder()
             .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
             .followRedirects(true)

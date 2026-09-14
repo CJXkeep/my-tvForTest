@@ -1,10 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!--
+      设置页统一风格：深色面板 + 绿色小标题 + 可聚焦行（与选台面板共用 list_item_bg 高亮）。
+      原先这里是 Leanback ImageCardView 的主题，随频道列表改为左侧面板后已移除。
+    -->
 
-    <style name="CustomImageCardViewStyle" parent="Widget.Leanback.ImageCardViewStyle">
-        <item name="lbImageCardViewType">Title|Content</item>
+    <!-- 分组小标题 -->
+    <style name="SettingSection">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">10dp</item>
+        <item name="android:layout_marginBottom">6dp</item>
+        <item name="android:textColor">#8BC34A</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:textStyle">bold</item>
     </style>
 
-    <style name="CustomImageCardTheme" parent="Theme.Leanback">
-        <item name="imageCardViewStyle">@style/CustomImageCardViewStyle</item>
+    <!-- 可聚焦的设置行 -->
+    <style name="SettingRow">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">44dp</item>
+        <item name="android:background">@drawable/list_item_bg</item>
+        <item name="android:focusable">true</item>
+        <item name="android:focusableInTouchMode">true</item>
+        <item name="android:gravity">center_vertical</item>
+        <item name="android:orientation">horizontal</item>
+        <item name="android:paddingStart">12dp</item>
+        <item name="android:paddingEnd">12dp</item>
+    </style>
+
+    <!-- 行内左侧标题 -->
+    <style name="SettingLabel">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:singleLine">true</item>
+        <item name="android:textColor">#FFEEEEEE</item>
+        <item name="android:textSize">15sp</item>
+    </style>
+
+    <!-- 行内右侧取值（开/关等） -->
+    <style name="SettingValue">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textColor">#8BC34A</item>
+        <item name="android:textSize">14sp</item>
     </style>
 </resources>

@@ -7,12 +7,6 @@ object SP {
     // Name of the sp file TODO Should use a meaningful name and do migrations
     private const val SP_FILE_NAME = "MainActivity"
 
-    // If Change channel with up and down in reversed order or not
-    private const val KEY_CHANNEL_REVERSAL = "channel_reversal"
-
-    // If use channel num to select channel or not
-    private const val KEY_CHANNEL_NUM = "channel_num"
-
     private const val KEY_TIME = "time"
 
     // If start app on device boot or not
@@ -29,9 +23,6 @@ object SP {
     // IPTV 数据源订阅地址
     private const val KEY_IPTV_SOURCE_URL = "iptv_source_url"
 
-    // 收藏频道（归一化名，逗号分隔，靠前的排更前）
-    private const val KEY_FAVORITES = "favorites"
-
     // EPG 节目单地址（XMLTV，留空则用订阅源自带的 x-tvg-url）
     private const val KEY_EPG_URL = "epg_url"
 
@@ -43,14 +34,6 @@ object SP {
     fun init(context: Context) {
         sp = context.getSharedPreferences(SP_FILE_NAME, Context.MODE_PRIVATE)
     }
-
-    var channelReversal: Boolean
-        get() = sp.getBoolean(KEY_CHANNEL_REVERSAL, false)
-        set(value) = sp.edit().putBoolean(KEY_CHANNEL_REVERSAL, value).apply()
-
-    var channelNum: Boolean
-        get() = sp.getBoolean(KEY_CHANNEL_NUM, true)
-        set(value) = sp.edit().putBoolean(KEY_CHANNEL_NUM, value).apply()
 
     var time: Boolean
         get() = sp.getBoolean(KEY_TIME, true)
@@ -76,33 +59,46 @@ object SP {
         get() = sp.getString(KEY_IPTV_SOURCE_URL, "") ?: ""
         set(value) = sp.edit().putString(KEY_IPTV_SOURCE_URL, value).apply()
 
-    var favorites: String
-        get() = sp.getString(KEY_FAVORITES, "") ?: ""
-        set(value) = sp.edit().putString(KEY_FAVORITES, value).apply()
-
     var epgUrl: String
         get() = sp.getString(KEY_EPG_URL, "") ?: ""
         set(value) = sp.edit().putString(KEY_EPG_URL, value).apply()
 
-    // 软解码优先（兼容部分设备硬解花屏/无声）
-    private const val KEY_SOFT_DECODE = "soft_decode"
+    // 远程配置访问令牌（首次读取时生成），用于保护局域网配置接口
+    private const val KEY_CONFIG_TOKEN = "config_token"
 
-    var softDecode: Boolean
-        get() = sp.getBoolean(KEY_SOFT_DECODE, false)
-        set(value) = sp.edit().putBoolean(KEY_SOFT_DECODE, value).apply()
+    var configToken: String
+        get() {
+            val existing = sp.getString(KEY_CONFIG_TOKEN, "") ?: ""
+            if (existing.isNotEmpty()) return existing
+            val chars = "abcdefghijkmnpqrstuvwxyz23456789"
+            val generated = (1..6)
+                .map { chars[kotlin.random.Random.nextInt(chars.length)] }
+                .joinToString("")
+            sp.edit().putString(KEY_CONFIG_TOKEN, generated).apply()
+            return generated
+        }
+        set(value) = sp.edit().putString(KEY_CONFIG_TOKEN, value).apply()
+
+    /** 确保访问令牌已生成（启动时调用，避免首次请求时才生成导致地址不一致） */
+    fun ensureConfigToken(): String = configToken
+
+    // 是否已展示过首次启动的远程配置引导
+    private const val KEY_GUIDE_SHOWN = "guide_shown"
+
+    var guideShown: Boolean
+        get() = sp.getBoolean(KEY_GUIDE_SHOWN, false)
+        set(value) = sp.edit().putBoolean(KEY_GUIDE_SHOWN, value).apply()
 
     /** 恢复默认：重置各项设置开关与缓存，保留订阅源与收藏（用户配置数据） */
     fun reset() {
         sp.edit()
-            .remove(KEY_CHANNEL_REVERSAL)
-            .remove(KEY_CHANNEL_NUM)
             .remove(KEY_TIME)
             .remove(KEY_BOOT_STARTUP)
             .remove(KEY_GRID)
             .remove(KEY_POSITION)
             .remove(KEY_GUID)
             .remove(KEY_EPG_URL)
-            .remove(KEY_SOFT_DECODE)
+            .remove(KEY_GUIDE_SHOWN)
             .apply()
     }
 }

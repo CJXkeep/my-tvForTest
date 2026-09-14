@@ -19,6 +19,9 @@ data class TV(
     var headers: Map<String, String> = emptyMap(),
     var tvgId: String = "",
 
+    /** 线路地址 → 画质分（越大越清晰），仅用于多线路排序 */
+    var urlQuality: Map<String, Int> = emptyMap(),
+
     ) : Serializable {
 
     override fun toString(): String {

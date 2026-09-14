@@ -5,6 +5,7 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import com.lizongying.mytv.TV
+import com.lizongying.mytv.TVList
 import com.lizongying.mytv.api.FEPG
 import java.text.SimpleDateFormat
 import java.util.TimeZone
@@ -14,14 +15,8 @@ class TVViewModel(private var tv: TV) : ViewModel() {
     private var rowPosition: Int = 0
     private var itemPosition: Int = 0
 
-    var retryTimes = 0
-    var retryMaxTimes = 8
-    var tokenYSPRetryTimes = 0
-    var tokenYSPRetryMaxTimes = 0
     var tokenFHRetryTimes = 0
     var tokenFHRetryMaxTimes = 8
-
-    var needGetToken = false
 
     private val _errInfo = MutableLiveData<String>()
     val errInfo: LiveData<String>
@@ -89,25 +84,25 @@ class TVViewModel(private var tv: TV) : ViewModel() {
         get() = sourceTypes[sourceTypeIndex]
 
     fun addVideoUrl(url: String) {
-        if (_videoUrl.value?.isNotEmpty() == true) {
-            if (_videoUrl.value!!.last().contains("cctv.cn")) {
-                tv.videoUrl = tv.videoUrl.subList(0, tv.videoUrl.lastIndex) + listOf(url)
-            } else {
-                tv.videoUrl = tv.videoUrl + listOf(url)
-            }
+        val current = _videoUrl.value
+        tv.videoUrl = if (!current.isNullOrEmpty() && current.last().contains("cctv.cn")) {
+            // cctv.cn 地址是"换"而不是"追加"：它通常是同一路的临时凭证
+            tv.videoUrl.dropLast(1) + listOf(url)
         } else {
-            tv.videoUrl = tv.videoUrl + listOf(url)
+            tv.videoUrl + listOf(url)
         }
         _videoUrl.value = tv.videoUrl
         _videoIndex.value = tv.videoUrl.lastIndex
     }
 
     fun firstSource() {
-        if (_videoUrl.value!!.isNotEmpty()) {
+        if (!_videoUrl.value.isNullOrEmpty()) {
             setVideoIndex(0)
             allReady()
         } else {
-            Log.e(TAG, "no first")
+            Log.e(TAG, "no source available: ${tv.title}")
+            // 早期这里只打日志：没有线路 → 不触发播放 → 界面永远停在上一帧，用户没有任何反馈
+            setErrInfo("${tv.title} 没有可用线路")
         }
     }
 
@@ -115,10 +110,23 @@ class TVViewModel(private var tv: TV) : ViewModel() {
     var attemptCount = 0
         private set
 
-    /** 是否已达轮换上限（线路数 × 2 轮仍失败则放弃，避免死循环） */
-    fun isAttemptExhausted(): Boolean {
+    /**
+     * 自动轮换的线路范围：默认只在前 [AUTO_LINE_LIMIT] 条（排序后的最优线）内轮换，
+     * 避免在一堆低质线路上反复折腾；若用户手动选到更靠后的线路，则放开到全部线路。
+     */
+    private fun autoLimit(): Int {
         val size = _videoUrl.value?.size ?: 0
-        return size > 0 && attemptCount >= size * 2
+        if (size <= AUTO_LINE_LIMIT) return size
+        return if ((videoIndex.value ?: 0) >= AUTO_LINE_LIMIT) size else AUTO_LINE_LIMIT
+    }
+
+    /** 自动轮换可用的线路数（供界面提示使用） */
+    fun autoLineCount(): Int = autoLimit()
+
+    /** 是否已达轮换上限（自动范围内轮换两轮仍失败则放弃，避免死循环） */
+    fun isAttemptExhausted(): Boolean {
+        val limit = autoLimit()
+        return limit > 0 && attemptCount >= limit * 2
     }
 
     fun resetAttempts() {
@@ -130,7 +138,8 @@ class TVViewModel(private var tv: TV) : ViewModel() {
         val size = _videoUrl.value?.size ?: return
         if (size > 1) {
             attemptCount++
-            val next = ((videoIndex.value ?: 0) + 1) % size
+            val limit = autoLimit().coerceAtLeast(1)
+            val next = ((videoIndex.value ?: 0) + 1) % limit
             setVideoIndex(next)
             resetSourceTypes()
             allReady()
@@ -205,11 +214,45 @@ class TVViewModel(private var tv: TV) : ViewModel() {
         }
     }
 
+    /** 当前线路地址；无可用线路时返回空串（调用方必须判空，避免直接 NPE 崩溃） */
     fun getVideoUrlCurrent(): String {
-        return _videoUrl.value!![_videoIndex.value!!]
+        val list = _videoUrl.value
+        if (list.isNullOrEmpty()) return ""
+        val index = (_videoIndex.value ?: 0).coerceIn(0, list.lastIndex)
+        return list[index]
+    }
+
+    /** 是否存在可播放线路 */
+    fun hasSource(): Boolean = !_videoUrl.value.isNullOrEmpty()
+
+    /**
+     * 运行时重排线路（探活完成 / 播放成功后调用），让"实测优选"不再等到下次启动。
+     *
+     * 两条约束：
+     * - **不裁剪**（`trim = false`）：运行时裁剪可能把正在播放的那条裁到保留位之外；
+     * - **索引跟着走**：重排后把 [videoIndex] 重新定位到同一个地址，
+     *   这样"列表顺序变了，但播放器持有的 URL 没变"，播放不会被打断。
+     */
+    fun resortLines() {
+        val current = _videoUrl.value ?: return
+        if (current.size <= 1) return
+        val playing = getVideoUrlCurrent()
+        TVList.sortLines(tv, trim = false)
+        val reordered = tv.videoUrl
+        if (reordered == current) return
+        _videoUrl.value = reordered
+        val idx = reordered.indexOf(playing)
+        _videoIndex.value = if (idx >= 0) idx else 0
+        Log.i(TAG, "resort lines: ${tv.title} -> ${reordered.size} lines, now playing #${idx + 1}")
     }
 
     companion object {
+        /**
+         * 自动轮换只用排序后最优的前 N 条线路（"优中选优"），
+         * 其余线路仍保留在列表里，用户可在线路列表中手动切换。
+         */
+        const val AUTO_LINE_LIMIT = 2
+
         private const val TAG = "TVViewModel"
     }
 }
