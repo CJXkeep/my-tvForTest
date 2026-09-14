@@ -27,12 +27,16 @@ class SourceFragment : DialogFragment() {
     private var title: String = ""
     private var items: List<Item> = emptyList()
 
+    /** 副标题提示；为空时用布局里的默认文案（线路列表用默认，数据源面板传自己的） */
+    private var hint: String? = null
+
     /** 选中某条线路（0 基下标） */
     var onSelected: ((Int) -> Unit)? = null
 
-    fun setData(title: String, items: List<Item>) {
+    fun setData(title: String, items: List<Item>, hint: String? = null) {
         this.title = title
         this.items = items
+        this.hint = hint
     }
 
     /**
@@ -69,6 +73,7 @@ class SourceFragment : DialogFragment() {
     ): View {
         _binding = SourceBinding.inflate(inflater, container, false)
         binding.sourceTitle.text = title
+        hint?.let { binding.sourceHint.text = it }
         binding.sourceContainer.removeAllViews()
 
         val rowHeight = Utils.dpToPx(ROW_HEIGHT_DP)

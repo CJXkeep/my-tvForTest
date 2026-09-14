@@ -102,6 +102,20 @@
                 style="@style/SettingSection"
                 android:text="数据源（M3U / TXT / JSON）" />
 
+            <LinearLayout
+                android:id="@+id/row_sources"
+                style="@style/SettingRow"
+                android:nextFocusDown="@+id/iptv_source">
+
+                <TextView
+                    style="@style/SettingLabel"
+                    android:text="查看数据源" />
+
+                <TextView
+                    android:id="@+id/value_sources"
+                    style="@style/SettingValue" />
+            </LinearLayout>
+
             <EditText
                 android:id="@+id/iptv_source"
                 android:layout_width="match_parent"
@@ -109,7 +123,7 @@
                 android:background="@drawable/setting_input_bg"
                 android:hint="留空使用默认源（3 个公开聚合源）"
                 android:nextFocusDown="@+id/row_save"
-                android:nextFocusUp="@+id/row_boot"
+                android:nextFocusUp="@+id/row_sources"
                 android:paddingStart="12dp"
                 android:paddingEnd="12dp"
                 android:singleLine="true"

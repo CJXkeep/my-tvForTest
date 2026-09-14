@@ -165,6 +165,63 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
         }
     }
 
+    /**
+     * 数据源面板：列出全部候选源及其健康状况，选中即切换（改为只使用它）。
+     *
+     * 之前"看源/换源"只能开浏览器，对只看电视的人太麻烦；
+     * 地址的**编辑**仍留在远程页（遥控器输字符不现实），这里只做**选择**。
+     */
+    fun showSourcePicker() {
+        val candidates = TVList.allSources()
+        if (candidates.isEmpty()) return
+        val stats = SourceHealth.snapshot()
+        val currentList = TVList.currentSources()
+
+        fun buildItems() = candidates.map { url ->
+            val agg = stats[url]
+            val detail = if (agg == null) {
+                "暂无记录"
+            } else {
+                "成功率 ${agg.successRate}% (${agg.okCount}/${agg.attempts}) · " +
+                        "平均 ${agg.avgMs}ms · 最近 ${agg.lastChannels} 台"
+            }
+            val isCurrent = currentList.contains(url)
+            // 多源模式下所有源都在用，全标"（当前）"会失去意义：
+            // 只有单选一个源时才强调"当前"，多源时标"已启用"
+            val single = currentList.size == 1
+            SourceFragment.Item(
+                // 只在"单选一个源"时标记，多源模式下全都在用、标记没有信息量，还会把标题挤到截断
+                title = SourceHealth.label(url) + if (single && isCurrent) "（当前）" else "",
+                detail = detail,
+                current = single && isCurrent,
+            )
+        }
+
+        sourceFragment.onSelected = { index ->
+            candidates.getOrNull(index)?.let { switchToSource(it) }
+        }
+        sourceFragment.setData(
+            "数据源 · ${candidates.size} 个",
+            buildItems(),
+            "上下选择数据源，OK 切换为只使用它，返回键关闭",
+        )
+        sourceFragment.show(supportFragmentManager, "source")
+    }
+
+    /** 切换到指定数据源：旧缓存、探活与失败记忆都属于上一个源，一并清掉 */
+    private fun switchToSource(url: String) {
+        cancelSourcePrompt()
+        cancelAutoSkip()
+        unavailableStreak = 0
+        SP.iptvSourceUrl = url
+        ChannelCache.clear()
+        ChannelProbe.reset()
+        LineHealth.reset()
+        SP.itemPosition = 0
+        showInfoMessage("已切换到 ${SourceHealth.label(url)}，正在重新加载")
+        reloadChannels()
+    }
+
     /** 线路信息描述：画质 · 探测状态 · 录像标记 · 域名 */
     private fun describeSource(tv: TV, url: String): String {
         val parts = mutableListOf<String>()

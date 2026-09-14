@@ -74,9 +74,18 @@ object SourceHealth {
     /** 当前统计快照（供远程配置页展示） */
     fun snapshot(): Map<String, Agg> = ensureLoaded()
 
-    /** 源的可读标识（域名） */
-    fun label(url: String): String =
-        runCatching { java.net.URI(url).host }.getOrNull()?.removePrefix("www.") ?: url
+    /**
+     * 源的可读标识。
+     * 同一 host 下可能有多个源（实测 3 个 GitHub 仓库都在 raw.githubusercontent.com），
+     * 只用域名会显示成一模一样，因此带上一级路径。
+     */
+    fun label(url: String): String {
+        val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return url
+        val host = uri.host?.removePrefix("www.") ?: return url
+        // 一级路径作为区分（三个 GitHub 源都在同一个 host 上）
+        val seg = uri.path.orEmpty().trim('/').substringBefore('/')
+        return if (seg.isBlank()) host else "$host/$seg"
+    }
 
     /** 清空统计与落盘文件 */
     fun reset() {

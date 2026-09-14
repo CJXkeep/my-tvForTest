@@ -141,6 +141,12 @@ object TVList {
         return (configured + DEFAULT_SOURCES).distinct()
     }
 
+    /** 全部候选源（用户配置 + 内置默认），供电视端"数据源"面板展示与切换 */
+    fun allSources(): List<String> = sourceCandidates()
+
+    /** 当前生效的源列表（用于标记"当前"） */
+    fun currentSources(): List<String> = sources()
+
     /** 候选源总数（用于判断是否已轮完，避免无意义地反复切换） */
     fun sourceCandidateCount(): Int = sourceCandidates().size
 

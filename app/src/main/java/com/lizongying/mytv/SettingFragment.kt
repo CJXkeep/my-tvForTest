@@ -53,6 +53,17 @@ class SettingFragment : DialogFragment() {
 
         binding.iptvSource.setText(SP.iptvSourceUrl)
 
+        // 数据源摘要 + 入口：查看/切换源不必再开浏览器
+        val sources = TVList.allSources()
+        val stats = SourceHealth.snapshot()
+        val okCount = sources.count { stats[it]?.lastOk == true }
+        binding.valueSources.text = "$okCount/${sources.size} 可用"
+
+        binding.rowSources.setOnClickListener {
+            dismiss()
+            (activity as? MainActivity)?.showSourcePicker()
+        }
+
         bindToggle(binding.rowTime, binding.valueTime, SP.time) {
             SP.time = it
             // 立即生效：时间显示由 MainActivity 控制（原先挂在 settingDelayHide 里，已随自动收起一并移除）
