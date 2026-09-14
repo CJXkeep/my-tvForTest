@@ -2,6 +2,7 @@ package com.lizongying.mytv
 
 import android.util.Log
 import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import com.lizongying.mytv.models.ProgramType
 import okhttp3.OkHttpClient
 import okhttp3.Request as HttpReq
@@ -670,23 +671,78 @@ object TVList {
      */
     fun sortLines(tv: TV, trim: Boolean) {
         if (tv.videoUrl.size <= 1) return
-        tv.videoUrl = tv.videoUrl.sortedWith(
-            compareBy<String> {
-                (if (isLoopSuspect(it)) 1 else 0) +
-                        (if (LineHealth.isBad(it)) 1 else 0)
-            }
-                // 历史成功率高的优先：区分"播一次成一次"与"从没播过"
+        val preferred = preferenceMap()[canonicalName(tv.title)]
+
+        var comparator: Comparator<String> = compareBy<String> {
+            (if (isLoopSuspect(it)) 1 else 0) +
+                    (if (LineHealth.isBad(it)) 1 else 0)
+        }
+            // 用户手动选过的那条优先（坏线已被上一级排除，不会把坏线抬上来）
+            .thenBy { if (it == preferred) 0 else 1 }
+
+        comparator = if (SP.qualityFirst) {
+            // 画质优先：先看清晰度，再看能不能播
+            comparator
+                .thenByDescending { measuredOrGuessedQuality(tv, it) }
+                .thenBy { probeLevelRank(it) }
                 .thenByDescending { successRank(it) }
-                // 探活档位：能播的排前面——**可用性优先于清晰度**
+        } else {
+            // 默认：可用性优先——能播 > 清晰
+            comparator
+                .thenByDescending { successRank(it) }
                 .thenBy { probeLevelRank(it) }
                 .thenByDescending { measuredOrGuessedQuality(tv, it) }
-                .thenBy { ChannelProbe.sortKey(it) }
-        )
+        }
+
+        tv.videoUrl = tv.videoUrl.sortedWith(comparator.thenBy { ChannelProbe.sortKey(it) })
         // 网段打散：实测一个频道的多条线路经常汇聚到同一台服务器，
         // 若前两条（自动轮换范围）同源，单点故障会一次打掉整批
         diversifyLines(tv)
         // 裁剪：只排序不删除会让探活覆盖不全，排在后面的线路依据是"未探测"这个中性值，等于盲排
         if (trim) trimLines(tv)
+    }
+
+    // ---------------- 线路偏好（用户手动选过的线路） ----------------
+
+    /** 偏好上限，避免长期使用后无限增长 */
+    private const val MAX_LINE_PREFS = 100
+
+    @Volatile
+    private var prefCacheJson: String = ""
+    @Volatile
+    private var prefCache: Map<String, String> = emptyMap()
+
+    /** 归一化频道名 → 用户手动选过的线路 URL（带简单缓存，避免每次排序都解析 JSON） */
+    private fun preferenceMap(): Map<String, String> {
+        val json = SP.linePreference
+        if (json == prefCacheJson) return prefCache
+        val parsed = runCatching {
+            val type = object : TypeToken<Map<String, String>>() {}.type
+            Gson().fromJson<Map<String, String>>(json, type)
+        }.getOrNull() ?: emptyMap()
+        prefCacheJson = json
+        prefCache = parsed
+        return parsed
+    }
+
+    /**
+     * 记住用户为某频道手动选择的线路。
+     * 这是比"自动轮换播成功过"更强的偏好信号——用户明确选过它。
+     */
+    fun rememberPreference(tv: TV, url: String) {
+        if (url.isBlank()) return
+        val key = canonicalName(tv.title)
+        val map = LinkedHashMap(preferenceMap())
+        map.remove(key)          // 重新插入以移到末尾（超出上限时淘汰最旧的）
+        map[key] = url
+        val limited = if (map.size > MAX_LINE_PREFS) {
+            LinkedHashMap(map.entries.drop(map.size - MAX_LINE_PREFS).associate { it.key to it.value })
+        } else {
+            map
+        }
+        SP.linePreference = Gson().toJson(limited)
+        prefCacheJson = ""       // 让下次读取重新解析
+        Log.i(TAG, "remember preference: ${tv.title} -> $url")
     }
 
     /**

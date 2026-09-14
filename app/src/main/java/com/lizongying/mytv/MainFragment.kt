@@ -551,6 +551,8 @@ class MainFragment : Fragment() {
                 TAG,
                 "select line: display=${displayPosition + 1} -> actual=${index + 1} $url"
             )
+            // 记住用户的手动选择（下次该频道优先用它）——这是比自动轮换更强的偏好信号
+            TVList.rememberPreference(tvViewModel.getTV(), url)
             tvViewModel.setVideoIndex(index)
             tvViewModel.changed()
             showSourceToast(tvViewModel, displayPosition, urls.size)

@@ -18,7 +18,7 @@ class ConfigServer(private val context: Context) :
 
     private val gson = Gson()
 
-    data class SaveRequest(val source: String?, val epg: String?)
+    data class SaveRequest(val source: String?, val epg: String?, val qualityFirst: Boolean?)
 
     /** 局域网配置鉴权：所有请求都需携带设置页展示的访问令牌 */
     private fun authorized(session: IHTTPSession): Boolean {
@@ -49,6 +49,8 @@ class ConfigServer(private val context: Context) :
                         SP.iptvSourceUrl = newSource
                     }
                     if (req?.epg != null) SP.epgUrl = req.epg.trim()
+                    // 排序偏好：true = 画质优先，false = 可用性优先（默认）
+                    if (req?.qualityFirst != null) SP.qualityFirst = req.qualityFirst
                     handler.post { onConfigChanged?.invoke() }
                     newFixedLengthResponse(
                         Response.Status.OK, "text/plain; charset=utf-8",
@@ -126,6 +128,7 @@ class ConfigServer(private val context: Context) :
                     mapOf(
                         "source" to SP.iptvSourceUrl,
                         "epg" to SP.epgUrl,
+                        "qualityFirst" to SP.qualityFirst,
                     )
                 )
             )
@@ -161,12 +164,12 @@ class ConfigServer(private val context: Context) :
                 const T = new URLSearchParams(location.search).get('token') || '';
                 const q = s => s + (s.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(T);
                 fetch(q('/api/config')).then(r=>r.json()).then(j=>{
-                  src.value=j.source||'';epg.value=j.epg||'';
+                  src.value=j.source||'';epg.value=j.epg||'';qfirst.checked=!!j.qualityFirst;
                 });
                 function save(){
                   fetch(q('/api/save'),{method:'POST',
                     headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify({source:src.value,epg:epg.value})
+                    body:JSON.stringify({source:src.value,epg:epg.value,qualityFirst:qfirst.checked})
                   }).then(r=>r.text()).then(t=>{msg.innerText=t;});
                 }
                 function test(){
@@ -210,6 +213,7 @@ class ConfigServer(private val context: Context) :
                 <textarea id="src" rows="5"></textarea>
                 <p>EPG 节目单地址（XMLTV，留空用订阅源自带地址）：</p>
                 <textarea id="epg" rows="2"></textarea>
+                <p><label><input type="checkbox" id="qfirst"> 画质优先（默认关闭：优先保证能播，其次才比清晰度）</label></p>
                 <br><br><button onclick="test()">测试源</button>
                 <button onclick="save()">保存并重新加载</button>
                 <button onclick="resetAll()">恢复默认设置</button>

@@ -63,6 +63,20 @@ object SP {
         get() = sp.getString(KEY_EPG_URL, "") ?: ""
         set(value) = sp.edit().putString(KEY_EPG_URL, value).apply()
 
+    // 排序偏好：false = 可用性优先（默认），true = 画质优先
+    private const val KEY_QUALITY_FIRST = "quality_first"
+
+    var qualityFirst: Boolean
+        get() = sp.getBoolean(KEY_QUALITY_FIRST, false)
+        set(value) = sp.edit().putBoolean(KEY_QUALITY_FIRST, value).apply()
+
+    // 用户手动选过的线路偏好：JSON {"归一化频道名":"线路URL"}，该频道优先用它
+    private const val KEY_LINE_PREF = "line_preference"
+
+    var linePreference: String
+        get() = sp.getString(KEY_LINE_PREF, "") ?: ""
+        set(value) = sp.edit().putString(KEY_LINE_PREF, value).apply()
+
     // 远程配置访问令牌（首次读取时生成），用于保护局域网配置接口
     private const val KEY_CONFIG_TOKEN = "config_token"
 
