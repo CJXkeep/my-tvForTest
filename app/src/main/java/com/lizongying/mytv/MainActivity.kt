@@ -129,7 +129,13 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
     /** 重新应用设置项（如恢复默认后同步时间显示） */
     fun applySettings() {
         showTime()
+        // 预加载开关可能刚被改动：开启则重新准备，关闭则立刻释放待命播放器
+        playerFragment.onPreloadSettingChanged()
     }
+
+    /** 相邻频道的 ViewModel（供播放器预加载用），offset 为 ±1 */
+    fun neighborTVViewModel(offset: Int): TVViewModel? =
+        mainFragment.neighborTVViewModel(offset)
 
     /** 打开线路列表：列出当前频道的所有线路及其画质/延迟/录像标记 */
     fun showSourceList() {

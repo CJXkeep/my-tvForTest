@@ -89,6 +89,32 @@ class PlayerFragment : Fragment() {
      */
     private var playStartAt = 0L
 
+    /**
+     * 待命播放器（"预加载下一频道"开启时才有）：提前把下一个频道的流缓冲好，
+     * 换台时直接接管渲染，省掉整段加载过程。
+     *
+     * 它**不渲染、不播放**，只负责缓冲；因此绝不能挂 [playerListener]——
+     * 那个监听器会显示加载遮罩、写播放统计、触发自动跳过，都是"当前频道"才该做的事。
+     */
+    private var standbyPlayer: ExoPlayer? = null
+
+    /** 待命播放器正在预备的频道 id（-1 表示没有） */
+    private var standbyChannelId = -1
+
+    /**
+     * 本次换台的方向：+1 向下、-1 向上。
+     * 只朝一个方向预加载——单台待命播放器无法同时预备上下两个频道，
+     * 而用户换台通常有方向性（一直按频道+，或一直按频道-）。
+     */
+    private var preloadOffset = 1
+
+    /**
+     * 本次起播是否由"待命接管"完成。
+     * 接管意味着画面来自已经缓冲充足的流，可以更快开始准备再下一个
+     * （普通起播时当前流还在补缓冲，拉下一路会互相拖慢）。
+     */
+    private var promotedStart = false
+
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?,
         savedInstanceState: Bundle?
@@ -176,6 +202,8 @@ class PlayerFragment : Fragment() {
     /** 重建播放器（硬解 ↔ 软解切换），保持监听与播放状态 */
     private fun rebuildPlayer(soft: Boolean) {
         val context = activity ?: return
+        // 软解重建时先释放待命播放器：它可能是硬解实例，白占着解码器
+        releaseStandby()
         val old = playerView?.player
         playerView?.player = null
         old?.removeListener(playerListener)
@@ -268,17 +296,27 @@ class PlayerFragment : Fragment() {
                 tvViewModel?.confirmSourceType()
                 tvViewModel?.resetAttempts()
                 (activity as MainActivity).isPlaying()
+                // 准备下一个频道。接管后可以更快开始（画面来自已缓冲充足的流）；
+                // 普通起播则要等一等，否则会和还在补缓冲的当前流抢带宽。
+                handler.removeCallbacks(preloadRunnable)
+                handler.postDelayed(
+                    preloadRunnable,
+                    if (promotedStart) PRELOAD_DELAY_AFTER_PROMOTE_MS else PRELOAD_DELAY_MS
+                )
             }
         }
     }
 
     fun play(tvViewModel: TVViewModel) {
         this.tvViewModel = tvViewModel
+        val newId = tvViewModel.getTV().id
         // 只有"换频道"才清零重试计数。
         // 自动换线同样会走这里，早期无条件 resetAttempts() 会把上限反复清零，
         // 结果就是死台永远重试下去（日志里每 3 秒一个 Source error，停不下来）。
-        if (lastChannelId != tvViewModel.getTV().id) {
-            lastChannelId = tvViewModel.getTV().id
+        if (lastChannelId != newId) {
+            // 记下换台方向：预加载只朝这个方向准备，避免预备了一个用户根本不会去的台
+            preloadOffset = if (lastChannelId < 0 || newId > lastChannelId) 1 else -1
+            lastChannelId = newId
             timeoutCount = 0
             tvViewModel.resetAttempts()
         }
@@ -290,6 +328,21 @@ class PlayerFragment : Fragment() {
         showLoading()
         // 线路变了要重新判断封装类型（同一个 URL 的类型记忆仍会命中）
         tvViewModel.resetSourceTypes()
+
+        // 预加载命中：目标频道已经在待命播放器里缓冲好，直接接管渲染。
+        // 这是唯一能真正做到"切换就有台"的路径——它省掉的不是握手，而是整段加载。
+        //
+        // 清排程必须在接管**之前**：接管会同步触发 onIsPlayingChanged，
+        // 那里会为"新的下一个频道"重新排程；顺序反了就会把刚排上的任务又取消掉，
+        // 表现是"只有第一次快，之后再也等不到待命播放器"。
+        //
+        // 同理，promotedStart 也必须在接管之前置位——它会被那次同步回调读到。
+        promotedStart = true
+        handler.removeCallbacks(preloadRunnable)
+        if (promoteStandby(newId)) {
+            return
+        }
+        promotedStart = false
         applyCurrentSource()
     }
 
@@ -305,6 +358,93 @@ class PlayerFragment : Fragment() {
         (playerView?.player as? ExoPlayer)?.apply {
             setMediaSource(buildMediaSource(vm))
             prepare()
+        }
+    }
+
+    // ---------------- 预加载下一频道（D 方案，由设置开关控制） ----------------
+
+    private val preloadRunnable = Runnable { prepareStandby() }
+
+    /**
+     * 为下一个频道准备待命播放器。
+     * 只在起播成功后再延迟 [PRELOAD_DELAY_MS] 调用——刚起播时那条流还在缓冲，立刻再拉一路会互相拖慢。
+     */
+    private fun prepareStandby() {
+        if (!SP.preloadNext) return
+        val ctx = activity ?: return
+        val next = (activity as? MainActivity)?.neighborTVViewModel(preloadOffset) ?: return
+        val nextId = next.getTV().id
+        if (nextId == lastChannelId) return                              // 只有这一个频道
+        if (standbyPlayer != null && standbyChannelId == nextId) return   // 已经备好
+
+        releaseStandby()
+        val player = buildPlayer(ctx, softDecode)
+        player.playWhenReady = false                                     // 只缓冲：不出声、不渲染
+        player.addListener(standbyListener)
+        player.setMediaSource(buildMediaSource(next))
+        player.prepare()
+        standbyPlayer = player
+        standbyChannelId = nextId
+        Log.i(TAG, "standby: prepare ${next.getTV().title} [${next.getVideoUrlCurrent()}]")
+    }
+
+    /** 释放待命播放器（关闭开关、软解重建、退出时都要调用） */
+    private fun releaseStandby() {
+        standbyPlayer?.removeListener(standbyListener)
+        standbyPlayer?.release()
+        standbyPlayer = null
+        standbyChannelId = -1
+    }
+
+    /**
+     * 让待命播放器接管渲染；返回 true 表示已接管，调用方不要再走普通加载路径。
+     * 没缓冲好就不接管——否则只是换了个播放器重新加载，白折腾。
+     */
+    private fun promoteStandby(channelId: Int): Boolean {
+        if (!SP.preloadNext) return false
+        val stand = standbyPlayer ?: return false
+        if (standbyChannelId != channelId) return false
+        if (stand.playbackState != Player.STATE_READY) return false
+        val old = playerView?.player as? ExoPlayer
+        if (old === stand) return false
+
+        Log.i(
+            TAG,
+            "standby: promote #$channelId (elapsed ${SystemClock.elapsedRealtime() - playStartAt}ms)"
+        )
+        old?.removeListener(playerListener)
+        stand.removeListener(standbyListener)
+        playerView?.player = stand
+        stand.addListener(playerListener)
+        stand.playWhenReady = true
+
+        standbyPlayer = null
+        standbyChannelId = -1
+        // 旧播放器立刻释放：保证任何时刻最多两个解码器实例，不会出现新旧待命三份并存
+        old?.release()
+        return true
+    }
+
+    /** 设置里的"预加载下一频道"被改动时调用 */
+    fun onPreloadSettingChanged() {
+        handler.removeCallbacks(preloadRunnable)
+        if (!SP.preloadNext) {
+            releaseStandby()
+            return
+        }
+        if (hasPlayed) handler.postDelayed(preloadRunnable, PRELOAD_DELAY_MS)
+    }
+
+    /**
+     * 待命播放器专用监听。
+     * **不能复用 [playerListener]**：那会触发加载遮罩、播放统计、自动跳过等"当前频道才该做"的动作。
+     * 预加载失败也不必补偿——换台时自然会走普通加载路径。
+     */
+    private val standbyListener = object : Player.Listener {
+        override fun onPlayerError(error: PlaybackException) {
+            Log.i(TAG, "standby: failed ${error.errorCodeName}")
+            standbyPlayer = null
+            standbyChannelId = -1
         }
     }
 
@@ -506,6 +646,8 @@ class PlayerFragment : Fragment() {
         super.onDestroy()
         handler.removeCallbacks(showLoadingRunnable)
         handler.removeCallbacks(watchdog)
+        handler.removeCallbacks(preloadRunnable)
+        releaseStandby()
         playerView?.player?.removeListener(playerListener)
         playerView?.player?.release()
     }
@@ -527,9 +669,10 @@ class PlayerFragment : Fragment() {
 
         /**
          * 首帧起播阈值：缓冲到这么多就能出画。
-         * media3 默认 2500ms——直播切台时这段完全是白等，压到 1000ms。
+         * media3 默认 2500ms——直播切台时这段完全是白等，一路压到 500ms。
+         * 代价是弱网下更容易"刚出画就卡"，由"卡顿后自动降画质"与线路轮换兜底。
          */
-        private const val BUFFER_FOR_PLAYBACK_MS = 1_000
+        private const val BUFFER_FOR_PLAYBACK_MS = 500
 
         /** 卡顿后重新起播的门槛：略高于首帧阈值，避免在临界点来回抖 */
         private const val BUFFER_AFTER_REBUFFER_MS = 2_000
@@ -564,6 +707,23 @@ class PlayerFragment : Fragment() {
          * 超过则说明确实要等，此时显示遮罩比让人盯着静止画面更清楚。
          */
         private const val LOADING_SHOW_DELAY_MS = 500L
+
+        /**
+         * 起播成功后延迟多久再准备下一个频道。
+         *
+         * 这个值直接决定"频繁连按换台"能否吃到预加载：待命就绪 = 本延迟 + 加载耗时（1~3s），
+         * 用户按得比它快就永远等不到。由 3s 压到 1.5s——首帧出来后当前流的缓冲已经稳住，
+         * 再拉一路不会明显拖慢它，而就绪窗口从约 5s 缩短到约 3s。
+         */
+        private const val PRELOAD_DELAY_MS = 1_500L
+
+        /**
+         * 由待命接管起播后，延迟多久准备再下一个。
+         * 比 [PRELOAD_DELAY_MS] 短得多：接管的画面来自**已经缓冲充足**的流，
+         * 再拉一路几乎不会影响它。这个值越小，"频繁连按"越有机会吃到预加载——
+         * 待命就绪 = 本延迟 + 线路加载耗时（1~3s），用户按得比它快就永远等不到。
+         */
+        private const val PRELOAD_DELAY_AFTER_PROMOTE_MS = 300L
 
         /** 软解码器优先的选择器（c2.android / OMX.google 为软件实现） */
         private val softwareFirstSelector: MediaCodecSelector =

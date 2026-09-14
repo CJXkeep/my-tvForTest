@@ -934,6 +934,10 @@ object TVList {
     private const val GROUP_CCTV = "央视频道"
     private const val GROUP_SAT = "卫视频道"
 
+    /** 排序键分段：1~17 直接留给台号；1000 段是 CCTV5+ 这类变体，2000 段是 4K/8K */
+    private const val HD_ORDER_BASE = 1_000
+    private const val EXTRA_ORDER_BASE = 2_000
+
     /**
      * 应用频道白名单过滤，并把保留下来的频道归入「央视频道 / 卫视频道」两个分组。
      *
@@ -984,15 +988,26 @@ object TVList {
         return c.startsWith("CCTV") || c.startsWith("CGTN")
     }
 
-    /** 央视排序键：CCTV5 → 500、CCTV5+ → 510、CCTV12 → 1200；4K/8K 紧跟在同台号之后（CCTV4 → CCTV4K） */
+    /**
+     * 央视排序键。
+     *
+     * **关键约束：CCTV-n 的排序键就是 n**，让它在列表里的位置正好是第 n 位——
+     * 这样遥控器数字键"按几就是几"才对得上（按 5 出 CCTV-5）。
+     *
+     * 因此 `CCTV-5+`、`CCTV-4K`、`CCTV-8K` 这类"额外台"一律排到 1~17 **之后**：
+     * 它们照常占各自的编号，但不会把后面台号的位置顶偏
+     * （之前 4K 排在 4 与 5 之间，直接导致按 5 出来的是 CCTV-5+）。
+     * 没有台号的（CGTN 等）排最后。
+     */
     private fun cctvOrder(title: String): Int {
         val c = canonicalName(title)
-        val m = Regex("(\\d{1,2})(\\+)?").find(c) ?: return Int.MAX_VALUE
-        val n = m.groupValues[1].toIntOrNull() ?: return Int.MAX_VALUE
-        val plus = if (m.groupValues[2].isNotEmpty()) 10 else 0
-        // 带 K/Q 后缀（4K / 8K）的排在同台号的高清频道之后，避免与它并列时顺序随机
-        val hd = if (c.endsWith("K") || c.endsWith("Q")) 1 else 0
-        return n * 100 + plus + hd
+        val m = Regex("^(CCTV)([0-9]{1,2})(\\+?)").find(c)
+        val n = m?.groupValues?.get(2)?.toIntOrNull() ?: return Int.MAX_VALUE
+        // 5+：接在 1~17 之后
+        if (m.groupValues[3].isNotEmpty()) return HD_ORDER_BASE + n
+        // 4K / 8K：再往后，同样不占台号
+        if (c.endsWith("K") || c.endsWith("Q")) return EXTRA_ORDER_BASE + n
+        return n
     }
 
     /** 点播文件地址（.mp4/.mkv/.avi）：直播列表里出现这些基本是混进来的录制内容 */

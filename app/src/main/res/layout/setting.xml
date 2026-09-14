@@ -98,6 +98,26 @@
                     style="@style/SettingValue" />
             </LinearLayout>
 
+            <LinearLayout
+                android:id="@+id/row_preload"
+                style="@style/SettingRow">
+
+                <TextView
+                    style="@style/SettingLabel"
+                    android:text="预加载下一频道" />
+
+                <TextView
+                    android:id="@+id/value_preload"
+                    style="@style/SettingValue" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="为下一个频道提前准备播放器，换台更快；少数设备可能因双解码卡顿"
+                android:textColor="#99EEEEEE"
+                android:textSize="12sp" />
+
             <TextView
                 style="@style/SettingSection"
                 android:text="数据源（M3U / TXT / JSON）" />

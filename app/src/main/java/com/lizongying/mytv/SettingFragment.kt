@@ -70,6 +70,11 @@ class SettingFragment : DialogFragment() {
             (activity as? MainActivity)?.applySettings()
         }
         bindToggle(binding.rowBoot, binding.valueBoot, SP.bootStartup) { SP.bootStartup = it }
+        bindToggle(binding.rowPreload, binding.valuePreload, SP.preloadNext) {
+            SP.preloadNext = it
+            // 立即生效：关掉时马上释放待命播放器，不必等到下次换台
+            (activity as? MainActivity)?.applySettings()
+        }
 
         binding.rowSave.setOnClickListener {
             val url = binding.iptvSource.text.toString().trim()

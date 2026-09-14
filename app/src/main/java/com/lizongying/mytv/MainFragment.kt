@@ -635,6 +635,16 @@ class MainFragment : Fragment() {
     /** 当前播放/选中的频道 */
     fun getCurrentTVViewModel(): TVViewModel? = tvListViewModel.getTVViewModel(itemPosition)
 
+    /**
+     * 相邻频道的 ViewModel（供播放器的预加载使用），offset 为 ±1，越界自动回绕。
+     * 列表只有一个频道时返回 null——没有"下一个"可以预备。
+     */
+    fun neighborTVViewModel(offset: Int): TVViewModel? {
+        val size = tvListViewModel.size()
+        if (size <= 1) return null
+        return tvListViewModel.getTVViewModel(Math.floorMod(itemPosition + offset, size))
+    }
+
     fun fragmentReady() {
         tvListViewModel.getTVViewModel(itemPosition)?.changed()
         tvListViewModel.tvListViewModel.value?.forEach { updateEPG(it) }
