@@ -20,6 +20,7 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
@@ -115,9 +116,21 @@ class PlayerFragment : Fragment() {
         }
         trackSelector = selector
         softDecode = soft
+        // 直播起播阈值：默认要缓冲 2500ms 才出画，切台时这段是纯等。
+        // 压到 1000ms（弱网抖动由"卡顿后自动降画质"与线路轮换兜底）。
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                MIN_BUFFER_MS,
+                MAX_BUFFER_MS,
+                BUFFER_FOR_PLAYBACK_MS,
+                BUFFER_AFTER_REBUFFER_MS,
+            )
+            .build()
+
         return ExoPlayer.Builder(context, renderersFactory)
             .setTrackSelector(selector)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .setLoadControl(loadControl)
             .build()
     }
 
@@ -456,6 +469,21 @@ class PlayerFragment : Fragment() {
     companion object {
         private const val TAG = "PlayerFragment"
         private const val UA = "Mozilla/5.0 (Linux; Android) my-tv"
+
+        /** 缓冲区下限：直播不需要囤太多，省内存也少延迟 */
+        private const val MIN_BUFFER_MS = 10_000
+
+        /** 缓冲区上限 */
+        private const val MAX_BUFFER_MS = 30_000
+
+        /**
+         * 首帧起播阈值：缓冲到这么多就能出画。
+         * media3 默认 2500ms——直播切台时这段完全是白等，压到 1000ms。
+         */
+        private const val BUFFER_FOR_PLAYBACK_MS = 1_000
+
+        /** 卡顿后重新起播的门槛：略高于首帧阈值，避免在临界点来回抖 */
+        private const val BUFFER_AFTER_REBUFFER_MS = 2_000
 
         /** 缓冲判定窗口内的抖动次数达到该值即放宽画质 */
         private const val REBUFFER_LIMIT = 3

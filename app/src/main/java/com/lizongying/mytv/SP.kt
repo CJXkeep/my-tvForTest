@@ -36,7 +36,7 @@ object SP {
     }
 
     var time: Boolean
-        get() = sp.getBoolean(KEY_TIME, true)
+        get() = sp.getBoolean(KEY_TIME, false)
         set(value) = sp.edit().putBoolean(KEY_TIME, value).apply()
 
     var bootStartup: Boolean

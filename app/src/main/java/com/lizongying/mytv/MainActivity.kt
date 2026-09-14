@@ -105,6 +105,9 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
                 .remove(errorFragment)
                 .commit()
         }
+
+        // 每秒刷新右上角时间（关闭时只在整半小时窗口内自动露面）
+        startClockTick()
     }
 
     fun showInfoFragment(tvViewModel: TVViewModel) {
@@ -129,7 +132,7 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
     }
 
     /** 打开线路列表：列出当前频道的所有线路及其画质/延迟/录像标记 */
-    private fun showSourceList() {
+    fun showSourceList() {
         val vm = mainFragment.getCurrentTVViewModel() ?: return
         val urls = vm.videoUrl.value ?: return
         if (urls.size <= 1) {
@@ -240,24 +243,6 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
         val host = realHost?.takeIf { it.isNotBlank() } ?: entryHost
         if (!host.isNullOrBlank()) parts.add(host)
         return parts.joinToString(" · ")
-    }
-
-    /**
-     * 首次启动引导：只出现一次。
-     * 早期是"远程配置地址"和"长按手势"两条信息分两次弹（间隔 6 秒），第二条常被错过，
-     * 这里合并成一条；未配置数据源时才带上配置地址。
-     */
-    private fun maybeShowOnboarding() {
-        if (SP.guideShown) return
-        SP.guideShown = true
-        val lines = mutableListOf<String>()
-        if (SP.iptvSourceUrl.isBlank()) {
-            ConfigServer.lanIp()?.let { ip ->
-                lines.add("手机访问 http://$ip:${ConfigServer.PORT}/?token=${SP.configToken} 配置频道")
-            }
-        }
-        lines.add("◀ ▶ 切换线路 · 长按 OK 打开线路列表")
-        Toast.makeText(this, lines.joinToString("\n"), Toast.LENGTH_LONG).show()
     }
 
     private fun showChannel(channel: String) {
@@ -378,17 +363,39 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
             playbackStarted = true
             mainFragment.fragmentReady()
             showTime()
-            maybeShowOnboarding()
         }
     }
 
+    /**
+     * 右上角时间：
+     * - 设置里打开 → 常显；
+     * - 默认关闭 → 只在**整半小时**附近自动露面（提前 5 秒出现、持续 20 秒），
+     *   既随时知道时间，又不长期占着画面。
+     */
     private fun showTime() {
-        Log.i(TAG, "showTime ${SP.time}")
         if (SP.time) {
             timeFragment.show()
-        } else {
-            timeFragment.hide()
+            return
         }
+        if (inHalfHourWindow()) timeFragment.show() else timeFragment.hide()
+    }
+
+    /** 是否落在"整半小时"的显示窗口内（:29:55~:30:15 与 :59:55~:00:15，各 20 秒） */
+    private fun inHalfHourWindow(): Boolean {
+        // 时区偏移都是整小时，所以"时内秒数"在任何时区都一致
+        val secOfHour = (Utils.getDateTimestamp() % 3600L).toInt()
+        if (secOfHour in HALF_HOUR_LEAD_START..HALF_HOUR_TAIL_END) return true
+        return secOfHour >= FULL_HOUR_LEAD_START || secOfHour <= WINDOW_TAIL_SECONDS
+    }
+
+    /** 每秒刷新时间显示（常显时无副作用，关闭时负责在整半小时窗口内自动现身） */
+    private fun startClockTick() {
+        handler.post(object : Runnable {
+            override fun run() {
+                showTime()
+                handler.postDelayed(this, 1_000L)
+            }
+        })
     }
 
     fun isPlaying() {
@@ -774,6 +781,17 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
 
     private companion object {
         const val TAG = "MainActivity"
+
+        /** 整半小时显示窗口：:29:55 开始（提前 5 秒）、到 :30:15 结束（共 20 秒） */
+        const val HALF_HOUR_LEAD_START = 29 * 60 + 55
+
+        const val HALF_HOUR_TAIL_END = 30 * 60 + 15
+
+        /** 整点窗口的起点 :59:55（终点复用 [WINDOW_TAIL_SECONDS]，跨到下一小时） */
+        const val FULL_HOUR_LEAD_START = 59 * 60 + 55
+
+        /** 窗口结束的"分钟后秒数"：:00:15 / :30:15 共用 */
+        const val WINDOW_TAIL_SECONDS = 15
 
         /** 时钟重新校准间隔：长时间运行后设备时钟漂移会直接影响 EPG 匹配与显示时间 */
         const val CLOCK_RESYNC_INTERVAL_MS = 6 * 3600_000L

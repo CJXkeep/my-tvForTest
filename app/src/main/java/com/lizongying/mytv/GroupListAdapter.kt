@@ -33,17 +33,26 @@ class GroupListAdapter(
         notifyDataSetChanged()
     }
 
-    /** 分组数量（不含末尾的「设置」项） */
+    /** 分组数量（不含末尾的「换线路」与「设置」项） */
     fun groupCount(): Int = names.size
 
-    override fun getItemCount(): Int = names.size + 1
+    /** 「换线路」项位置：当前频道的线路列表入口（比"长按 OK"可发现得多） */
+    fun linesIndex(): Int = names.size
+
+    /** 「设置」项位置 */
+    fun settingsIndex(): Int = names.size + 1
+
+    override fun getItemCount(): Int = names.size + 2
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder =
         Holder(ItemGroupListBinding.inflate(LayoutInflater.from(parent.context), parent, false))
 
     override fun onBindViewHolder(holder: Holder, position: Int) {
         val text = holder.binding.groupName
-        if (position >= names.size) {
+        if (position == linesIndex()) {
+            text.text = "换线路"
+            text.setTextColor(SETTING_COLOR)
+        } else if (position == settingsIndex()) {
             text.text = "设置"
             text.setTextColor(SETTING_COLOR)
         } else {

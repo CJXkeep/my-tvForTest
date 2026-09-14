@@ -1,6 +1,8 @@
 package com.lizongying.mytv
 
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
@@ -73,12 +75,12 @@ class MainFragment : Fragment() {
         groupAdapter = GroupListAdapter(
             onFocused = { index -> onGroupFocused(index) },
             onClick = { index ->
-                if (index >= groupAdapter.groupCount()) {
-                    // 末尾的「设置」项
-                    (activity as? MainActivity)?.showSetting()
-                } else {
+                when (index) {
+                    // 末尾两项不是分组
+                    groupAdapter.settingsIndex() -> (activity as? MainActivity)?.showSetting()
+                    groupAdapter.linesIndex() -> (activity as? MainActivity)?.showSourceList()
                     // 选中分组 = 进入它的频道列表
-                    moveFocus(false)
+                    else -> moveFocus(false)
                 }
             },
         )
@@ -597,6 +599,9 @@ class MainFragment : Fragment() {
     fun play(itemPosition: Int) {
         view?.post {
             if (itemPosition > -1 && itemPosition < tvListViewModel.size()) {
+                // 明确选台（数字键/列表选中）立即起播，不再走换台去抖
+                switchHandler.removeCallbacks(playSwitch)
+                pendingSwitch = null
                 this.itemPosition = itemPosition
                 tvListViewModel.setItemPosition(itemPosition)
                 tvListViewModel.getTVViewModel(itemPosition)?.changed()
@@ -608,19 +613,46 @@ class MainFragment : Fragment() {
 
     fun prev() {
         view?.post {
-            itemPosition--
-            if (itemPosition < 0) itemPosition = tvListViewModel.size() - 1
-            tvListViewModel.setItemPosition(itemPosition)
-            tvListViewModel.getTVViewModel(itemPosition)?.changed()
+            val size = tvListViewModel.size()
+            if (size == 0) return@post
+            switchTo(if (itemPosition <= 0) size - 1 else itemPosition - 1)
         }
     }
 
     fun next() {
         view?.post {
-            itemPosition++
-            if (itemPosition >= tvListViewModel.size()) itemPosition = 0
-            tvListViewModel.setItemPosition(itemPosition)
-            tvListViewModel.getTVViewModel(itemPosition)?.changed()
+            val size = tvListViewModel.size()
+            if (size == 0) return@post
+            switchTo(if (itemPosition >= size - 1) 0 else itemPosition + 1)
+        }
+    }
+
+    /**
+     * 换台：位置与信息条**立即**更新，但起播延迟 [SWITCH_DEBOUNCE_MS]。
+     *
+     * 连续换台时，中间那些频道原本也会各自去加载（白占带宽、还拖慢最后一次），
+     * 去抖后只在用户停手时加载最后一个——"相邻换台老是缓冲"主要就是这个原因。
+     */
+    private fun switchTo(position: Int) {
+        itemPosition = position
+        tvListViewModel.setItemPosition(position)
+        // 立即反馈"按到哪了"，不用等起播
+        tvListViewModel.getTVViewModel(position)?.let {
+            (activity as? MainActivity)?.showInfoFragment(it)
+        }
+        pendingSwitch = position
+        switchHandler.removeCallbacks(playSwitch)
+        switchHandler.postDelayed(playSwitch, SWITCH_DEBOUNCE_MS)
+    }
+
+    private val switchHandler = Handler(Looper.getMainLooper())
+
+    private var pendingSwitch: Int? = null
+
+    private val playSwitch = Runnable {
+        pendingSwitch?.let {
+            pendingSwitch = null
+            tvListViewModel.getTVViewModel(it)?.changed()
         }
     }
 
@@ -642,11 +674,19 @@ class MainFragment : Fragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         backlogJob?.cancel()
+        switchHandler.removeCallbacks(playSwitch)
+        pendingSwitch = null
         _binding = null
     }
 
     companion object {
         private const val TAG = "MainFragment"
+
+        /**
+         * 换台去抖：停手这么久才真正起播。
+         * 太短起不到作用，太长会让"按一下要等一下"变得明显——350ms 与遥控器连按间隔接近。
+         */
+        private const val SWITCH_DEBOUNCE_MS = 350L
 
         /** 后台补探间隔：太短会给源站压力，太长则用户切过去后的空窗期太久 */
         private const val BACKLOG_INTERVAL_MS = 60_000L
