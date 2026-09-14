@@ -111,19 +111,36 @@ class TVViewModel(private var tv: TV) : ViewModel() {
         private set
 
     /**
-     * 自动轮换的线路范围：默认只在前 [AUTO_LINE_LIMIT] 条（排序后的最优线）内轮换，
-     * 避免在一堆低质线路上反复折腾；若用户手动选到更靠后的线路，则放开到全部线路。
+     * 已自动轮换的次数（**不含**封装类型轮换）。
+     * 用于逐步放宽 [autoLimit] 的窗口——封装轮换并没有换地址，不该算作"已放弃一条线路"。
+     */
+    private var rotateCount = 0
+
+    /**
+     * 自动轮换的线路窗口：初始只在前 [AUTO_LINE_LIMIT] 条（排序后的最优线）内轮换，
+     * 避免在一堆低质线路上反复折腾。
+     *
+     * **失败后逐步放宽**：每轮换一次，窗口 +1，上限 [AUTO_LINE_LIMIT_EXPANDED]。
+     *
+     * 早期窗口固定为 2，一旦前两条恰好同时是坏线（公共源里很常见），就会直接判死整台，
+     * 而排序第 3、4 条其实可能是好的。放宽的代价是每条线路要多等一个超时周期，
+     * 所以上限收在 4 条——用"最坏多等一会儿"换"别太早放弃这个台"。
+     *
+     * 若用户手动选到窗口之外的线路，则放开到全部线路：手动选择优先于自动策略。
      */
     private fun autoLimit(): Int {
         val size = _videoUrl.value?.size ?: 0
         if (size <= AUTO_LINE_LIMIT) return size
-        return if ((videoIndex.value ?: 0) >= AUTO_LINE_LIMIT) size else AUTO_LINE_LIMIT
+        val window = (AUTO_LINE_LIMIT + rotateCount).coerceAtMost(AUTO_LINE_LIMIT_EXPANDED)
+        // 用 window 而不是常量来比较：窗口放宽后自动换线本身也会走到第 3 条，
+        // 若仍拿 AUTO_LINE_LIMIT 判断，会把它误认成"用户手动选的"而放开到全部线路。
+        return if ((videoIndex.value ?: 0) >= window) size else window.coerceAtMost(size)
     }
 
     /** 自动轮换可用的线路数（供界面提示使用） */
     fun autoLineCount(): Int = autoLimit()
 
-    /** 是否已达轮换上限（自动范围内轮换两轮仍失败则放弃，避免死循环） */
+    /** 是否已达轮换上限（自动窗口内轮换两轮仍失败则放弃，避免死循环） */
     fun isAttemptExhausted(): Boolean {
         val limit = autoLimit()
         return limit > 0 && attemptCount >= limit * 2
@@ -131,6 +148,7 @@ class TVViewModel(private var tv: TV) : ViewModel() {
 
     fun resetAttempts() {
         attemptCount = 0
+        rotateCount = 0
     }
 
     /** 轮转到下一条线路（循环），用于播放出错时自动换源 */
@@ -138,6 +156,8 @@ class TVViewModel(private var tv: TV) : ViewModel() {
         val size = _videoUrl.value?.size ?: return
         if (size > 1) {
             attemptCount++
+            // 先自增再取窗口：这次失败本身就是放宽的依据
+            rotateCount++
             val limit = autoLimit().coerceAtLeast(1)
             val next = ((videoIndex.value ?: 0) + 1) % limit
             setVideoIndex(next)
@@ -252,6 +272,12 @@ class TVViewModel(private var tv: TV) : ViewModel() {
          * 其余线路仍保留在列表里，用户可在线路列表中手动切换。
          */
         const val AUTO_LINE_LIMIT = 2
+
+        /**
+         * 反复失败后放宽到的窗口上限。
+         * 再往上试的收益递减，而每条线路都要用户多等一个超时周期，所以到此为止。
+         */
+        const val AUTO_LINE_LIMIT_EXPANDED = 4
 
         private const val TAG = "TVViewModel"
     }

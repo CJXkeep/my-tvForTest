@@ -323,6 +323,15 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
         }
     }
 
+    /**
+     * 首帧已渲染。
+     * 用来放行那些"会抢带宽"的后台任务——目前是线路探活：
+     * 它在起播期间跑会把首帧从约 2s 拖到约 9s（实测），所以推迟到画面出来之后。
+     */
+    fun onFirstFrameRendered() {
+        mainFragment.onFirstFrameRendered()
+    }
+
     /** OK 键：短按=切换频道列表，长按=打开当前频道的线路列表 */
     private fun handleCenterKey(event: KeyEvent?) {
         if (event?.action == KeyEvent.ACTION_DOWN && event.repeatCount == 1) {

@@ -900,11 +900,14 @@ object TVList {
      * 央视全套：CCTV-1~17 与 CCTV-5+。
      */
     private val CCTV_KEEP = setOf(
-        // 归一化后失去台号的（如 CCTV-4K，"4K" 被当画质词去掉）
+        // 失去台号的（个别源直接写 "CCTV"，不带台号）
         "CCTV",
         "CCTV1", "CCTV2", "CCTV3", "CCTV4", "CCTV5", "CCTV5+",
         "CCTV6", "CCTV7", "CCTV8", "CCTV9", "CCTV10", "CCTV11",
         "CCTV12", "CCTV13", "CCTV14", "CCTV15", "CCTV16", "CCTV17",
+        // 央视的 4K / 8K 是**独立频道**，必须各自成项：
+        // 归一化已保留 K 后缀，这里若漏掉就会被白名单整台丢弃。
+        "CCTV4K", "CCTV8K",
     )
 
     /**
@@ -981,11 +984,15 @@ object TVList {
         return c.startsWith("CCTV") || c.startsWith("CGTN")
     }
 
-    /** 央视排序键：CCTV5 → 50、CCTV5+ → 51、CCTV12 → 120；无台号的（如 CCTV-4K）排最后 */
+    /** 央视排序键：CCTV5 → 500、CCTV5+ → 510、CCTV12 → 1200；4K/8K 紧跟在同台号之后（CCTV4 → CCTV4K） */
     private fun cctvOrder(title: String): Int {
-        val m = Regex("(\\d{1,2})(\\+)?").find(canonicalName(title)) ?: return Int.MAX_VALUE
+        val c = canonicalName(title)
+        val m = Regex("(\\d{1,2})(\\+)?").find(c) ?: return Int.MAX_VALUE
         val n = m.groupValues[1].toIntOrNull() ?: return Int.MAX_VALUE
-        return n * 10 + if (m.groupValues[2].isNotEmpty()) 1 else 0
+        val plus = if (m.groupValues[2].isNotEmpty()) 10 else 0
+        // 带 K/Q 后缀（4K / 8K）的排在同台号的高清频道之后，避免与它并列时顺序随机
+        val hd = if (c.endsWith("K") || c.endsWith("Q")) 1 else 0
+        return n * 100 + plus + hd
     }
 
     /** 点播文件地址（.mp4/.mkv/.avi）：直播列表里出现这些基本是混进来的录制内容 */
@@ -1090,14 +1097,20 @@ object TVList {
         // 去掉括号内容与方括号内容：(720p)、[HD] 等
         n = n.replace(Regex("\\([^)]*\\)"), "")
         n = n.replace(Regex("\\[[^\\]]*\\]"), "")
-        // 去掉画质/帧率等修饰词
-        n = n.replace(Regex("(超高清|高清|标清|蓝光|超清|FHD|HD|SD|4K|8K|50FPS|60FPS)"), "")
         n = n.replace(" ", "").replace("－", "-").replace("–", "-").replace("—", "-")
-        // CCTV 系列取频道号主干：CCTV-1综合 -> CCTV1，CCTV5+体育赛事 -> CCTV5+
+        // CCTV 台号主干**必须在清理画质词之前**提取。
+        //
+        // "4K / 8K" 对央视来说不是画质标签，而是频道名的一部分：CCTV 确有 CCTV-4K 与 CCTV-8K
+        // 两个独立频道，源的写法还各不相同（"CCTV 4K"、"CCTV-4K (1080p)"、"CCTV-8K 超高清"）。
+        // 若先按画质词把 "4K" 删掉，这几个频道会全部归一化成 "CCTV" 并被折叠成同一个频道，
+        // 线路互相混杂——**标题显示 8K、实际可能正播着 4K**。
+        // 下面的 ([KQ]?) 分组正是为保留 K/Q 后缀而设，但顺序反了它就永远命中不了。
         val m = Regex("^(CCTV)-?([0-9]{1,2}\\+?)([KQ]?)").find(n)
         if (m != null) {
             return "CCTV" + m.groupValues[2] + m.groupValues[3]
         }
+        // 只有非 CCTV 频道才把 4K/高清 当画质词丢弃（东方卫视4K -> 东方卫视）
+        n = n.replace(Regex("(超高清|高清|标清|蓝光|超清|FHD|HD|SD|4K|8K|50FPS|60FPS)"), "")
         return n.replace("-", "")
     }
 }

@@ -67,6 +67,9 @@ class MainFragment : Fragment() {
     /** 后台补探任务（把没探过的分组逐步推进，用户切过去时不再是满屏"未探测"） */
     private var backlogJob: Job? = null
 
+    /** 启动阶段的后台任务是否已放行（首帧或兜底超时触发后置位，只放行一次） */
+    private var startupWorkReleased = false
+
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
     ): View {
@@ -122,17 +125,15 @@ class MainFragment : Fragment() {
             if (cached != null) {
                 loadRows(cached)
                 (activity as MainActivity).fragmentReady("MainFragment")
-                updateEpg()
-                probePriority()
-                refreshFromRemote()
+                // 拉源 / EPG / 探活统一推迟到首帧之后，避免与起播抢带宽
+                scheduleStartupWork()
             } else {
                 // 无缓存（首次安装）：等待远程拉取，失败会自动回退内置源
                 (activity as? MainActivity)?.showInfoMessage("正在加载频道…")
                 val list = withContext(Dispatchers.IO) { TVList.load() }
                 loadRows(list)
                 (activity as MainActivity).fragmentReady("MainFragment")
-                updateEpg()
-                probePriority()
+                scheduleStartupWork()
                 notifyIfEmpty(list)
             }
         }
@@ -304,6 +305,7 @@ class MainFragment : Fragment() {
                 val list = withContext(Dispatchers.IO) { TVList.load() }
                 loadRows(list)
                 restorePosition(currentTitle)
+                // 换源由用户主动发起，不在启动争抢窗口内，直接探活
                 probePriority()
                 notifyIfEmpty(list)
             }
@@ -397,6 +399,48 @@ class MainFragment : Fragment() {
         val targets = groupNames.mapNotNull { list[it] }.flatten()
         if (targets.isEmpty()) return
         ChannelProbe.probeAsync(targets) { channelAdapter.refresh() }
+    }
+
+    /**
+     * 压住启动阶段的后台任务，等首帧渲染出来再放行（见 [releaseStartupWork]）。
+     *
+     * 兜底：迟迟没有首帧时（例如这个频道本身就播不出来）按 [STARTUP_RELEASE_FALLBACK_MS] 强制放行，
+     * 否则这些任务永远不会跑：探活停在"未探测"、EPG 空白、列表也不再更新。
+     */
+    private fun scheduleStartupWork() {
+        if (startupWorkReleased) {
+            // 首帧早就来过（例如用户在播放中重新加载列表），不必再等
+            releaseStartupWork()
+            return
+        }
+        view?.postDelayed(startupWorkFallback, STARTUP_RELEASE_FALLBACK_MS)
+    }
+
+    private val startupWorkFallback = Runnable { releaseStartupWork() }
+
+    /** 首帧已渲染（由 [MainActivity] 转发）：立刻放行后台任务，不再等兜底 */
+    fun onFirstFrameRendered() {
+        view?.removeCallbacks(startupWorkFallback)
+        releaseStartupWork()
+    }
+
+    /**
+     * 放行启动阶段被压住的后台任务。
+     *
+     * 这三件都是网络密集的：拉订阅源、拉 EPG 节目单、探活最多 200 条线路（10 路并发）。
+     * 它们在起播期间会把首帧从约 2s 拖到约 9s（实测），所以统一等到画面出来再跑。
+     * 只放行一次——后续的换源、列表刷新已不在启动争抢窗口内。
+     */
+    private fun releaseStartupWork() {
+        if (startupWorkReleased) return
+        startupWorkReleased = true
+        updateEpg()
+        refreshFromRemote()
+        probePriority()
+        // 起播稳定后补一次相邻台预热。
+        // 启动路径不经过 switchTo()/play()，所以"启动后的第一次换台"目标台还是冷的：
+        // 实测 CCTV-1 → CCTV-2（目标台未预热）4030ms，而换到已预热过的 CCTV-3 只要 1941ms。
+        preheatAround(itemPosition)
     }
 
     /**
@@ -605,6 +649,7 @@ class MainFragment : Fragment() {
                 this.itemPosition = itemPosition
                 tvListViewModel.setItemPosition(itemPosition)
                 tvListViewModel.getTVViewModel(itemPosition)?.changed()
+                preheatAround(itemPosition)
             } else {
                 Toast.makeText(context, "频道不存在", Toast.LENGTH_SHORT).show()
             }
@@ -643,6 +688,28 @@ class MainFragment : Fragment() {
         pendingSwitch = position
         switchHandler.removeCallbacks(playSwitch)
         switchHandler.postDelayed(playSwitch, SWITCH_DEBOUNCE_MS)
+        // 去抖这段时间正好用来给相邻台做握手，用户继续按下去时下一个台已就绪
+        preheatAround(position)
+    }
+
+    /**
+     * 预热前后各 2 个频道的首选线路。
+     *
+     * "换台就有台"的关键动作：DNS / TCP / TLS / 302 都是硬延迟，等用户按下再去走就已经晚了。
+     *
+     * 取前后各 2 个而不是各 1 个：用户经常连按两下（CCTV-1 → CCTV-3），
+     * 只预热相邻 1 个的话第二个目标还是冷的——实测未预热 4030ms，已预热 1941ms。
+     * 偏移按"近 → 远"排列，[StreamPreheat] 依此顺序取用。
+     */
+    private fun preheatAround(position: Int) {
+        val size = tvListViewModel.size()
+        if (size <= 1) return
+        val urls = intArrayOf(1, -1, 2, -2)
+            .map { offset -> Math.floorMod(position + offset, size) }
+            .distinct()
+            .mapNotNull { tvListViewModel.getTVViewModel(it) }
+            .flatMap { vm -> vm.videoUrl.value.orEmpty().take(1) }
+        StreamPreheat.warm(urls)
     }
 
     private val switchHandler = Handler(Looper.getMainLooper())
@@ -674,6 +741,7 @@ class MainFragment : Fragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         backlogJob?.cancel()
+        view?.removeCallbacks(startupWorkFallback)
         switchHandler.removeCallbacks(playSwitch)
         pendingSwitch = null
         _binding = null
@@ -684,14 +752,24 @@ class MainFragment : Fragment() {
 
         /**
          * 换台去抖：停手这么久才真正起播。
-         * 太短起不到作用，太长会让"按一下要等一下"变得明显——350ms 与遥控器连按间隔接近。
+         * 太短起不到作用（连按会逐个去加载），太长会让"按一下要等一下"变得明显。
+         *
+         * 由 350ms 下调到 150ms：实测相邻换台的首帧里，有 350ms 是纯等这个去抖，
+         * 而遥控器连按的间隔通常快于 150ms，防连按的作用依然在。
          */
-        private const val SWITCH_DEBOUNCE_MS = 350L
+        private const val SWITCH_DEBOUNCE_MS = 150L
 
         /** 后台补探间隔：太短会给源站压力，太长则用户切过去后的空窗期太久 */
         private const val BACKLOG_INTERVAL_MS = 60_000L
 
         /** 后台补探轮数上限：避免为了"全量覆盖"持续发请求 */
         private const val BACKLOG_MAX_ROUNDS = 3
+
+        /**
+         * 启动阶段后台任务的兜底放行延迟。
+         * 正常路径是"首帧出来后立刻放行"，这个值只在首帧迟迟不来时生效。
+         * 取 8s：足够覆盖绝大多数起播（实测 1.3~2.0s），又不至于让探活 / EPG / 列表更新长时间不跑。
+         */
+        private const val STARTUP_RELEASE_FALLBACK_MS = 8_000L
     }
 }

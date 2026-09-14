@@ -82,12 +82,22 @@ class PlayerFragment : Fragment() {
     /** 上一次起播的频道 id：用于区分"换频道"与"同频道自动换线" */
     private var lastChannelId = -1
 
+    /**
+     * 本次起播的起点时刻（[SystemClock.elapsedRealtime]）。
+     * 用于测量"真正开始加载 → 画面渲染出来"的耗时——
+     * 没有这个数字，"换台快没快"就永远只能靠感觉，也无法判断瓶颈在网络还是解码。
+     */
+    private var playStartAt = 0L
+
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?,
         savedInstanceState: Bundle?
     ): View {
         _binding = PlayerBinding.inflate(inflater, container, false)
         playerView = _binding!!.playerView
+        // 换台时保留上一帧画面，而不是立刻黑屏：这是"切换即有台"的观感基础。
+        // 没有它，setMediaSource() 会让 PlayerView 清空画面，用户先看到一段黑屏再等新台出画。
+        playerView!!.setKeepContentOnPlayerReset(true)
         playerView!!.player = buildPlayer(requireContext(), softDecode)
         playerView!!.player?.playWhenReady = true
         playerView!!.player?.addListener(playerListener)
@@ -216,6 +226,24 @@ class PlayerFragment : Fragment() {
             }
         }
 
+        /**
+         * 首帧真正渲染出来的时刻——这才是用户眼中的"有台了"。
+         * 不用 STATE_READY：那只代表"可以播了"，画面还可能没上屏。
+         */
+        override fun onRenderedFirstFrame() {
+            super.onRenderedFirstFrame()
+            // 画面已出来：放行此前一直让路给起播的后台探活
+            (activity as? MainActivity)?.onFirstFrameRendered()
+            val vm = tvViewModel ?: return
+            if (playStartAt <= 0L) return
+            Log.i(
+                TAG,
+                "first frame in ${SystemClock.elapsedRealtime() - playStartAt}ms: " +
+                        "${vm.getTV().title} [${vm.getVideoUrlCurrent()}]"
+            )
+            playStartAt = 0L
+        }
+
         override fun onPlayerError(error: PlaybackException) {
             super.onPlayerError(error)
             Log.e(TAG, "PlaybackException $error")
@@ -258,6 +286,7 @@ class PlayerFragment : Fragment() {
         hasPlayed = false
         terminal = false
         rebufferTimes.clear()
+        playStartAt = SystemClock.elapsedRealtime()
         showLoading()
         // 线路变了要重新判断封装类型（同一个 URL 的类型记忆仍会命中）
         tvViewModel.resetSourceTypes()
@@ -290,6 +319,8 @@ class PlayerFragment : Fragment() {
         val headers = tvViewModel.getTV().headers
         val ua = headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.value
             ?: UA
+        // 必须是 DefaultHttpDataSource：它底层的 HttpURLConnection 连接池是进程级共享的，
+        // StreamPreheat 用同一种数据源预热，握手结果才能被这里的起播直接复用。
         val httpFactory = DefaultHttpDataSource.Factory()
             .setUserAgent(ua)
             .setAllowCrossProtocolRedirects(true)
@@ -339,14 +370,14 @@ class PlayerFragment : Fragment() {
         } else if (vm.getTV().programType == ProgramType.DIRECT
             && (vm.videoUrl.value?.size ?: 0) > 1
         ) {
-            val next = ((vm.videoIndex.value ?: 0) + 1) % limit
-            // 自动换线属正常过程，走信息条而非弹窗
-            (activity as? MainActivity)?.showInfoMessage(
-                "${vm.getTV().title} 线路 ${next + 1}/$limit"
-            )
             // 放弃这条线路：记下来，冷却期内不再优先尝试
             LineHealth.recordFail(vm.getVideoUrlCurrent())
             vm.nextSource()
+            // 提示放在切换**之后**：窗口会随失败次数放宽，先切才能报出准确的"第几条 / 共几条"。
+            // 自动换线属正常过程，走信息条而非弹窗。
+            (activity as? MainActivity)?.showInfoMessage(
+                "${vm.getTV().title} 线路 ${(vm.videoIndex.value ?: 0) + 1}/${vm.autoLineCount()}"
+            )
         } else if (vm.getTV().programType == ProgramType.DIRECT) {
             // 单线路直连频道：计数后原地重试（同一 URL，不经去重逻辑）
             vm.countAttempt()
@@ -356,15 +387,23 @@ class PlayerFragment : Fragment() {
         }
     }
 
+    /** 延迟显示加载遮罩：起播够快时用户根本看不到它，看到的是上一帧直接切到新画面 */
+    private val showLoadingRunnable = Runnable {
+        _binding?.loading?.visibility = View.VISIBLE
+    }
+
     private fun showLoading() {
         // 已进入终态就不再显示加载：否则"放弃后仍在转圈"的老问题会回来
         if (terminal) return
-        _binding?.loading?.visibility = View.VISIBLE
+        // 遮罩延迟出现，但看门狗立刻计时——超时语义不能因为"看不到转圈"而被推迟
+        handler.removeCallbacks(showLoadingRunnable)
+        handler.postDelayed(showLoadingRunnable, LOADING_SHOW_DELAY_MS)
         handler.removeCallbacks(watchdog)
         handler.postDelayed(watchdog, BUFFER_TIMEOUT_MS)
     }
 
     private fun hideLoading() {
+        handler.removeCallbacks(showLoadingRunnable)
         handler.removeCallbacks(watchdog)
         _binding?.loading?.visibility = View.GONE
     }
@@ -388,12 +427,21 @@ class PlayerFragment : Fragment() {
         )
         LineHealth.recordFail(vm.getVideoUrlCurrent())
 
-        if (timeoutCount >= TIMEOUT_LIMIT) {
+        // 每条线路给一次超时机会：自动窗口内的线路都超时过，才判这个台不行。
+        // 门槛随窗口放宽（2 → 3），但封顶 [TIMEOUT_LIMIT_MAX]——
+        // 一次超时 15s，不能让用户在"试第 4 条"上又多干等一个周期。
+        val lines = vm.videoUrl.value?.size ?: 0
+        val multiLine = vm.getTV().programType == ProgramType.DIRECT && lines > 1
+        val timeoutLimit = if (multiLine) {
+            vm.autoLineCount().coerceIn(TIMEOUT_LIMIT, TIMEOUT_LIMIT_MAX)
+        } else {
+            TIMEOUT_LIMIT
+        }
+        if (timeoutCount >= timeoutLimit) {
             enterTerminal("${vm.getTV().title} 线路无响应")
             return
         }
-        val lines = vm.videoUrl.value?.size ?: 0
-        if (vm.getTV().programType == ProgramType.DIRECT && lines > 1) {
+        if (multiLine) {
             vm.nextSource()
         } else {
             retryOnError()
@@ -456,6 +504,7 @@ class PlayerFragment : Fragment() {
 
     override fun onDestroy() {
         super.onDestroy()
+        handler.removeCallbacks(showLoadingRunnable)
         handler.removeCallbacks(watchdog)
         playerView?.player?.removeListener(playerListener)
         playerView?.player?.release()
@@ -499,8 +548,22 @@ class PlayerFragment : Fragment() {
          */
         private const val BUFFER_TIMEOUT_MS = 15_000L
 
-        /** 同一频道连续几次"连通但不出画面"就放弃：2 次约 40 秒，兼顾慢速源与用户等待 */
+        /** 同一频道连续几次"连通但不出画面"就放弃：2 次约 30 秒，兼顾慢速源与用户等待 */
         private const val TIMEOUT_LIMIT = 2
+
+        /**
+         * 超时判死的次数上限。
+         * 每次超时 [BUFFER_TIMEOUT_MS]（15s），3 次即 45s——
+         * 这是"多给一条线路机会"与"别让用户干等太久"之间的折中。
+         */
+        private const val TIMEOUT_LIMIT_MAX = 3
+
+        /**
+         * 加载遮罩延迟显示时长。
+         * 起播快于此值就完全不出现遮罩，用户只看到画面从上一台切到新台；
+         * 超过则说明确实要等，此时显示遮罩比让人盯着静止画面更清楚。
+         */
+        private const val LOADING_SHOW_DELAY_MS = 500L
 
         /** 软解码器优先的选择器（c2.android / OMX.google 为软件实现） */
         private val softwareFirstSelector: MediaCodecSelector =
