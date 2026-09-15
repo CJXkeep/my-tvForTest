@@ -137,6 +137,10 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
     fun neighborTVViewModel(offset: Int): TVViewModel? =
         mainFragment.neighborTVViewModel(offset)
 
+    /** 按频道 id 取 ViewModel（供播放器"回翻预加载"用，见 MainFragment.tvViewModelById） */
+    fun tvViewModelById(id: Int): TVViewModel? =
+        mainFragment.tvViewModelById(id)
+
     /** 打开线路列表：列出当前频道的所有线路及其画质/延迟/录像标记 */
     fun showSourceList() {
         val vm = mainFragment.getCurrentTVViewModel() ?: return

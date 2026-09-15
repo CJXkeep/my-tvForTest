@@ -11,6 +11,8 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.annotation.OptIn
 import androidx.fragment.app.Fragment
+import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -20,17 +22,29 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.HttpDataSource
+import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.LoadEventInfo
+import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
+import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.ui.PlayerView
 import com.lizongying.mytv.databinding.PlayerBinding
 import com.lizongying.mytv.models.ProgramType
 import com.lizongying.mytv.models.TVViewModel
+import java.io.IOException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.SocketException
+import java.net.UnknownHostException
 
 
 /**
@@ -90,6 +104,13 @@ class PlayerFragment : Fragment() {
     private var playStartAt = 0L
 
     /**
+     * 起播时间线的计时基准（见 [trace]）。
+     * 与 [playStartAt] 分开：后者在首帧出来后被清零，而时间线要覆盖到首帧**之后**——
+     * 接管之后是否立刻回补分片，正是"继承到的缓冲够不够"的直接证据。
+     */
+    private var traceBaseAt = 0L
+
+    /**
      * 待命播放器（"预加载下一频道"开启时才有）：提前把下一个频道的流缓冲好，
      * 换台时直接接管渲染，省掉整段加载过程。
      *
@@ -101,12 +122,39 @@ class PlayerFragment : Fragment() {
     /** 待命播放器正在预备的频道 id（-1 表示没有） */
     private var standbyChannelId = -1
 
+    /** 待命开始 prepare 的时刻：用于量化"多久才能接管"（见 [standbyListener]） */
+    private var standbyStartAt = 0L
+
+    /**
+     * 待命加载失败的频道：id → 失败时刻（[SystemClock.elapsedRealtime]）。
+     *
+     * 起播初期 [onIsPlayingChanged] 会触发多次（每次卡顿恢复都算一次），每次都重排 [preloadRunnable]；
+     * 而待命失败会把 [standbyPlayer] 置空，于是下一次排程就**原样重建**同一个台——
+     * 实测出现"failed 之后 124ms 又 prepare 同一个连不上的台"，白等一个连接超时。
+     */
+    private val standbyFailed = HashMap<Int, Long>()
+
     /**
      * 本次换台的方向：+1 向下、-1 向上。
      * 只朝一个方向预加载——单台待命播放器无法同时预备上下两个频道，
      * 而用户换台通常有方向性（一直按频道+，或一直按频道-）。
+     *
+     * 例外见 [flipFlop]：上下来回翻台时方向没有意义。
      */
     private var preloadOffset = 1
+
+    /** 上一次换台前所在的频道 id（-1 表示还没有）。用于判定"来回翻台"，见 [flipFlop] */
+    private var previousChannelId = -1
+
+    /**
+     * 本次是否属于"上下来回翻台"：按到了上一次换台前所在的那个台（A→B→A）。
+     *
+     * 这种按法的下一个目标**不是**列表里的相邻台，而是刚离开的那个台——
+     * 按方向预加载会把待命播放器备成一个用户根本不会去的台：
+     * 每翻一次就丢掉一个解码器实例+一段缓冲，再为错误的方向重建，
+     * 结果整个来回过程里只有第一次能吃到接管，之后每次都是整段重载。
+     */
+    private var flipFlop = false
 
     /**
      * 本次起播是否由"待命接管"完成。
@@ -127,13 +175,14 @@ class PlayerFragment : Fragment() {
         playerView!!.player = buildPlayer(requireContext(), softDecode)
         playerView!!.player?.playWhenReady = true
         playerView!!.player?.addListener(playerListener)
+        (playerView!!.player as? ExoPlayer)?.addAnalyticsListener(analyticsListener)
 
         (activity as MainActivity).fragmentReady("PlayerFragment")
         return _binding!!.root
     }
 
-    /** 构建播放器（可按需启用软解优先） */
-    private fun buildPlayer(context: Context, soft: Boolean): ExoPlayer {
+    /** 构建播放器（可按需启用软解优先 / 待命用的低缓冲水位） */
+    private fun buildPlayer(context: Context, soft: Boolean, standby: Boolean = false): ExoPlayer {
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setUserAgent(UA)
             .setAllowCrossProtocolRedirects(true)
@@ -152,12 +201,12 @@ class PlayerFragment : Fragment() {
         }
         trackSelector = selector
         softDecode = soft
-        // 直播起播阈值：默认要缓冲 2500ms 才出画，切台时这段是纯等。
-        // 压到 1000ms（弱网抖动由"卡顿后自动降画质"与线路轮换兜底）。
+        // 起播阈值见 [BUFFER_FOR_PLAYBACK_MS]：默认 2500ms 意味着切台时要白等这么久。
+        // 待命播放器另用一套更低的缓冲水位——它只需要"够接管"（见 [STANDBY_MIN_BUFFER_MS]）。
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                MIN_BUFFER_MS,
-                MAX_BUFFER_MS,
+                if (standby) STANDBY_MIN_BUFFER_MS else MIN_BUFFER_MS,
+                if (standby) STANDBY_MAX_BUFFER_MS else MAX_BUFFER_MS,
                 BUFFER_FOR_PLAYBACK_MS,
                 BUFFER_AFTER_REBUFFER_MS,
             )
@@ -165,7 +214,9 @@ class PlayerFragment : Fragment() {
 
         return ExoPlayer.Builder(context, renderersFactory)
             .setTrackSelector(selector)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .setMediaSourceFactory(
+                DefaultMediaSourceFactory(dataSourceFactory).setLoadErrorHandlingPolicy(loadErrorPolicy)
+            )
             .setLoadControl(loadControl)
             .build()
     }
@@ -207,12 +258,111 @@ class PlayerFragment : Fragment() {
         val old = playerView?.player
         playerView?.player = null
         old?.removeListener(playerListener)
+        (old as? ExoPlayer)?.removeAnalyticsListener(analyticsListener)
         old?.release()
 
         val player = buildPlayer(context, soft)
         player.playWhenReady = true
         player.addListener(playerListener)
+        player.addAnalyticsListener(analyticsListener)
         playerView?.player = player
+    }
+
+    /**
+     * 起播分段追踪。
+     *
+     * 只用 [Player.Listener] 看不清时间花在哪：m3u8 请求、首个分片、解码器初始化
+     * 都发生在 ExoPlayer 内部，最终只体现为一个"first frame in 3xxx ms"。
+     * 要判断启动首帧（实测 2.5~3.5s）该往哪儿优化，必须先有这条时间线。
+     */
+    private val analyticsListener = object : AnalyticsListener {
+        override fun onLoadStarted(
+            eventTime: AnalyticsListener.EventTime,
+            loadEventInfo: LoadEventInfo,
+            mediaLoadData: MediaLoadData,
+        ) {
+            trace(eventTime.realtimeMs, "load → ${shortUri(loadEventInfo.uri.toString())}")
+        }
+
+        override fun onLoadCompleted(
+            eventTime: AnalyticsListener.EventTime,
+            loadEventInfo: LoadEventInfo,
+            mediaLoadData: MediaLoadData,
+        ) {
+            trace(
+                eventTime.realtimeMs,
+                "done ← ${shortUri(loadEventInfo.uri.toString())} ${loadEventInfo.bytesLoaded}B",
+            )
+            // 本次起播的第一个响应（播放列表）回来了：uri 就是跳转落点，记下来
+            if (pendingResolveUrl.isNotBlank()) {
+                ResolvedUrl.remember(pendingResolveUrl, loadEventInfo.uri.toString())
+                pendingResolveUrl = ""
+            }
+        }
+
+        /**
+         * 请求失败。主动取消（切台 / 看门狗判死后的换线路）不算失败，但**也要留一行**：
+         * 否则那条被看门狗晾了 15 秒的线路会在日志里留下一段完全空白，看不出发生过什么。
+         * [Player.Listener] 只给一个笼统的错误码，失败原因只有这里看得到。
+         */
+        override fun onLoadError(
+            eventTime: AnalyticsListener.EventTime,
+            loadEventInfo: LoadEventInfo,
+            mediaLoadData: MediaLoadData,
+            error: IOException,
+            wasCanceled: Boolean,
+        ) {
+            trace(
+                eventTime.realtimeMs,
+                "${if (wasCanceled) "cancel" else "fail"} ← " +
+                        "${shortUri(loadEventInfo.uri.toString())} ${error.message}",
+                keepAfterWindow = true,
+            )
+        }
+
+        /** 拿到视频流格式：说明封装已解析，接下来才是解码器初始化与首帧渲染 */
+        override fun onVideoInputFormatChanged(
+            eventTime: AnalyticsListener.EventTime,
+            format: Format,
+            decoderReuseEvaluation: DecoderReuseEvaluation?,
+        ) {
+            trace(
+                eventTime.realtimeMs,
+                "format ${format.sampleMimeType} ${format.width}x${format.height}",
+            )
+        }
+    }
+
+    /**
+     * 打印一条起播时间线。只在起播窗口内输出——直播分片会持续加载，全量打印会刷屏。
+     *
+     * @param keepAfterWindow 失败原因要越过窗口保留：慢失败（例如 15 秒才超时的那条线路）
+     *   正好落在窗口之外，而那恰恰是最需要知道原因的时候。失败频率远低于分片加载，不会刷屏。
+     */
+    private fun trace(realtimeMs: Long, message: String, keepAfterWindow: Boolean = false) {
+        if (traceBaseAt <= 0L) return
+        val offset = realtimeMs - traceBaseAt
+        if (offset < 0) return
+        if (offset > TRACE_WINDOW_MS && !keepAfterWindow) return
+        Log.i(TAG, "[+${offset}ms] $message")
+    }
+
+    /** 本次起播用的是否是 [ResolvedUrl] 记下的 302 落点（失败时要退回原始地址） */
+    private var resolvedUrlInUse = false
+
+    /**
+     * 本次起播线路的**原始**地址，用于在第一个响应回来后记录 302 落点。
+     *
+     * 只靠预热记录落点是不够的：[MainFragment.preheatAround] 预热的是相邻台、**不含当前台**，
+     * 所以"启动后看的第一个台"和"刚切过去的台"都只能走原始地址（多一次跳转）。
+     * 而播放本身已经把跳转走完了，顺手记下来，下次（尤其是来回翻台切回来时）就能直接命中落点。
+     */
+    private var pendingResolveUrl = ""
+
+    /** 地址摘要：完整 URL 常带 token 与长路径，直接打会淹没日志 */
+    private fun shortUri(url: String): String {
+        val path = url.substringAfter("://", url).substringBefore('?')
+        return if (path.length <= 48) path else "…" + path.takeLast(48)
     }
 
     private val playerListener = object : Player.Listener {
@@ -299,10 +449,18 @@ class PlayerFragment : Fragment() {
                 // 准备下一个频道。接管后可以更快开始（画面来自已缓冲充足的流）；
                 // 普通起播则要等一等，否则会和还在补缓冲的当前流抢带宽。
                 handler.removeCallbacks(preloadRunnable)
-                handler.postDelayed(
-                    preloadRunnable,
-                    if (promotedStart) PRELOAD_DELAY_AFTER_PROMOTE_MS else PRELOAD_DELAY_MS
-                )
+                val delay = when {
+                    // 接管的画面来自已经缓冲充足的流，再拉一路几乎不影响它
+                    promotedStart -> PRELOAD_DELAY_AFTER_PROMOTE_MS
+                    // 折回且没接管：当前台是整段重载起来的，但它同时也是"刚播过"的台，
+                    // 流在 CDN 侧是热的，所以可以比冷启动的相邻台更早动手
+                    flipFlop -> PRELOAD_DELAY_FLIP_FLOP_MS
+                    else -> PRELOAD_DELAY_MS
+                }
+                // 记下实际使用的档位：只有这个数字，"等多久才轮到预加载"才说得清
+                // （first frame 到 prepare 的间隔还会叠加 isPlaying 的触发时机，不能反推）
+                Log.i(TAG, "standby: schedule in ${delay}ms (took over=$promotedStart, flip=$flipFlop)")
+                handler.postDelayed(preloadRunnable, delay)
             }
         }
     }
@@ -316,15 +474,22 @@ class PlayerFragment : Fragment() {
         if (lastChannelId != newId) {
             // 记下换台方向：预加载只朝这个方向准备，避免预备了一个用户根本不会去的台
             preloadOffset = if (lastChannelId < 0 || newId > lastChannelId) 1 else -1
+            // 换回上一次换台前所在的那个台 = 用户在上下反复翻台（A→B→A）。
+            // 只认"一步折回"，一直朝同一方向连按不会被误判成来回翻。
+            flipFlop = newId == previousChannelId
+            previousChannelId = lastChannelId
             lastChannelId = newId
             timeoutCount = 0
             tvViewModel.resetAttempts()
+            // 用户真的切到了这个台：清掉它的待命失败记录，下次轮到它当"下一个"时可以重新尝试
+            standbyFailed.remove(newId)
         }
         // 新频道重新开始卡顿统计（首帧缓冲不计入）
         hasPlayed = false
         terminal = false
         rebufferTimes.clear()
         playStartAt = SystemClock.elapsedRealtime()
+        traceBaseAt = playStartAt
         showLoading()
         // 线路变了要重新判断封装类型（同一个 URL 的类型记忆仍会命中）
         tvViewModel.resetSourceTypes()
@@ -355,6 +520,9 @@ class PlayerFragment : Fragment() {
             enterTerminal("${vm.getTV().title} 暂无可播放线路")
             return
         }
+        // 记录本次是否走了落点：失败时据此决定要不要退回原始地址（见 retryOnError）
+        resolvedUrlInUse = ResolvedUrl.find(vm.getVideoUrlCurrent()) != null
+        pendingResolveUrl = vm.getVideoUrlCurrent()
         (playerView?.player as? ExoPlayer)?.apply {
             setMediaSource(buildMediaSource(vm))
             prepare()
@@ -372,20 +540,36 @@ class PlayerFragment : Fragment() {
     private fun prepareStandby() {
         if (!SP.preloadNext) return
         val ctx = activity ?: return
-        val next = (activity as? MainActivity)?.neighborTVViewModel(preloadOffset) ?: return
+        val main = ctx as? MainActivity ?: return
+        // 来回翻台时备"刚离开的台"（用户大概率按回去），其余情况才按方向备相邻台。
+        // 列表只有一个频道时 [neighborTVViewModel] 返回 null，这里一并不做预加载。
+        val next = if (flipFlop) {
+            main.tvViewModelById(previousChannelId)
+        } else {
+            main.neighborTVViewModel(preloadOffset)
+        } ?: return
         val nextId = next.getTV().id
         if (nextId == lastChannelId) return                              // 只有这一个频道
         if (standbyPlayer != null && standbyChannelId == nextId) return   // 已经备好
+        if (isStandbyFailed(nextId)) {
+            Log.i(TAG, "standby: skip #$nextId (failed recently)")
+            return
+        }
 
         releaseStandby()
-        val player = buildPlayer(ctx, softDecode)
+        val player = buildPlayer(ctx, softDecode, standby = true)
         player.playWhenReady = false                                     // 只缓冲：不出声、不渲染
         player.addListener(standbyListener)
         player.setMediaSource(buildMediaSource(next))
+        standbyStartAt = SystemClock.elapsedRealtime()
         player.prepare()
         standbyPlayer = player
         standbyChannelId = nextId
-        Log.i(TAG, "standby: prepare ${next.getTV().title} [${next.getVideoUrlCurrent()}]")
+        Log.i(
+            TAG,
+            "standby: prepare ${next.getTV().title} [${next.getVideoUrlCurrent()}]" +
+                    if (flipFlop) " (flip-flop)" else ""
+        )
     }
 
     /** 释放待命播放器（关闭开关、软解重建、退出时都要调用） */
@@ -394,6 +578,19 @@ class PlayerFragment : Fragment() {
         standbyPlayer?.release()
         standbyPlayer = null
         standbyChannelId = -1
+    }
+
+    /**
+     * 该频道是否还在待命失败的静默期内。
+     * 过期即自动放行——源站可能已经恢复，频道线路也可能被探活重排过了。
+     */
+    private fun isStandbyFailed(id: Int): Boolean {
+        val at = standbyFailed[id] ?: return false
+        if (SystemClock.elapsedRealtime() - at > STANDBY_FAILED_TTL_MS) {
+            standbyFailed.remove(id)
+            return false
+        }
+        return true
     }
 
     /**
@@ -413,9 +610,11 @@ class PlayerFragment : Fragment() {
             "standby: promote #$channelId (elapsed ${SystemClock.elapsedRealtime() - playStartAt}ms)"
         )
         old?.removeListener(playerListener)
+        old?.removeAnalyticsListener(analyticsListener)
         stand.removeListener(standbyListener)
         playerView?.player = stand
         stand.addListener(playerListener)
+        stand.addAnalyticsListener(analyticsListener)
         stand.playWhenReady = true
 
         standbyPlayer = null
@@ -441,8 +640,23 @@ class PlayerFragment : Fragment() {
      * 预加载失败也不必补偿——换台时自然会走普通加载路径。
      */
     private val standbyListener = object : Player.Listener {
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_READY) {
+                // 这个数字就是"用户按多快才能吃到接管"的临界点：从 prepare 到可接管
+                Log.i(
+                    TAG,
+                    "standby: ready #$standbyChannelId (+${SystemClock.elapsedRealtime() - standbyStartAt}ms)"
+                )
+            }
+        }
+
         override fun onPlayerError(error: PlaybackException) {
             Log.i(TAG, "standby: failed ${error.errorCodeName}")
+            // 记进黑名单：待命失败后 onIsPlayingChanged 还会再次排程，
+            // 不挡的话会对同一个连不上的台反复重建（每次白等一个连接超时）
+            if (standbyChannelId >= 0) {
+                standbyFailed[standbyChannelId] = SystemClock.elapsedRealtime()
+            }
             standbyPlayer = null
             standbyChannelId = -1
         }
@@ -450,7 +664,9 @@ class PlayerFragment : Fragment() {
 
     /** 按当前源类型构建 MediaSource，应用频道自定义 headers */
     private fun buildMediaSource(tvViewModel: TVViewModel): MediaSource {
-        val url = tvViewModel.getVideoUrlCurrent()
+        // 优先用 302 落点：省掉一轮跳转往返（落点由 StreamPreheat 预热时顺手记下，见 ResolvedUrl）
+        val url = ResolvedUrl.find(tvViewModel.getVideoUrlCurrent())
+            ?: tvViewModel.getVideoUrlCurrent()
         val mime = if (tvViewModel.currentSourceType == TVViewModel.SourceTypes.TYPE_HLS) {
             MimeTypes.APPLICATION_M3U8
         } else {
@@ -471,6 +687,7 @@ class PlayerFragment : Fragment() {
             )
         val dataSourceFactory = DefaultDataSource.Factory(requireContext(), httpFactory)
         val factory = DefaultMediaSourceFactory(dataSourceFactory)
+            .setLoadErrorHandlingPolicy(loadErrorPolicy)
         val item = MediaItem.Builder().setUri(url).setMimeType(mime).build()
         return factory.createMediaSource(item)
     }
@@ -478,6 +695,15 @@ class PlayerFragment : Fragment() {
     /** 播放失败重试：源类型 → 线路 → 软解降级；达到上限则进入终态 */
     private fun retryOnError(error: PlaybackException? = null) {
         val vm = tvViewModel ?: return
+        // 走了 302 落点却失败：落点可能带时效参数已过期（见 ResolvedUrl）。
+        // 先忘掉它、退回原始地址重试一次——否则会把一条本来能播的线路直接判死。
+        if (resolvedUrlInUse) {
+            resolvedUrlInUse = false
+            Log.i(TAG, "resolved url failed, fall back to original: ${vm.getVideoUrlCurrent()}")
+            ResolvedUrl.forget(vm.getVideoUrlCurrent())
+            applyCurrentSource()
+            return
+        }
         val sourceError = isSourceError(error)
         val limit = vm.autoLineCount().coerceAtLeast(1)
 
@@ -607,6 +833,47 @@ class PlayerFragment : Fragment() {
     }
 
     /**
+     * 加载层重试策略：确定性失败不再等退避。
+     *
+     * 默认策略对同一条线路重试 3 次（退避 1s → 2s → …）。对"连接被重置 / 拒绝 / 域名解析不了"
+     * 这类**当场就返回**的失败，重试几乎必然得到同样结果——实测 BRTV 的首选线路
+     * `Connection reset` 在 41ms 就失败，之后却白等 3.4 秒才轮到上层换线路。
+     * 这与 [retryOnError] 里"源类错误多试只是让用户多等几个超时"的判断是矛盾的。
+     *
+     * 这里只拦"第二次同类失败"：第一次仍走默认策略快速重试（瞬时抖动是常态），
+     * 第二次起直接返回 [C.TIME_UNSET] 结束加载，把恢复动作交给线路轮换那套机制。
+     * 超时（[java.net.SocketTimeoutException]）**不算**确定性失败——拥塞是临时的，值得重试。
+     */
+    private val loadErrorPolicy = object : DefaultLoadErrorHandlingPolicy() {
+        override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
+            if (loadErrorInfo.errorCount > 1 && isDeterministicFailure(loadErrorInfo.exception)) {
+                Log.i(
+                    TAG,
+                    "give up retry x${loadErrorInfo.errorCount}: ${loadErrorInfo.exception.message}"
+                )
+                return C.TIME_UNSET
+            }
+            return super.getRetryDelayMsFor(loadErrorInfo)
+        }
+    }
+
+    /** 是否为"重试也不会变"的确定性失败（逐层看 cause，数据源常把它包一层） */
+    private fun isDeterministicFailure(error: IOException): Boolean {
+        var e: Throwable? = error
+        while (e != null) {
+            when (e) {
+                is UnknownHostException, is ConnectException, is NoRouteToHostException -> return true
+                // 连接被重置：服务端主动断开（调度/防爬），重试通常还是断
+                is SocketException -> if (e.message?.contains("reset", true) == true) return true
+                // 4xx 是确定性拒绝；5xx 可能是源站临时故障，留给默认策略重试
+                is HttpDataSource.InvalidResponseCodeException -> return e.responseCode in 400..499
+            }
+            e = e.cause
+        }
+        return false
+    }
+
+    /**
      * 终态：停止转圈、停掉播放器，并交给 Activity 统一提示 + 决定是否自动跳过。
      * 必须有终态——早期这里只弹一个会消失的 Toast，转圈图标会永久留在屏幕上。
      */
@@ -649,6 +916,7 @@ class PlayerFragment : Fragment() {
         handler.removeCallbacks(preloadRunnable)
         releaseStandby()
         playerView?.player?.removeListener(playerListener)
+        (playerView?.player as? ExoPlayer)?.removeAnalyticsListener(analyticsListener)
         playerView?.player?.release()
     }
 
@@ -724,6 +992,39 @@ class PlayerFragment : Fragment() {
          * 待命就绪 = 本延迟 + 线路加载耗时（1~3s），用户按得比它快就永远等不到。
          */
         private const val PRELOAD_DELAY_AFTER_PROMOTE_MS = 300L
+
+        /**
+         * 来回翻台且**未**命中接管时，延迟多久准备待命。
+         *
+         * 折回的目标台是"刚播过"的台，它的流在 CDN 侧是热的，再拉一路对当前台影响很小
+         * （与 [PRELOAD_DELAY_AFTER_PROMOTE_MS] 同理）。这个值直接决定"折回能不能吃到预加载"：
+         * 待命就绪 = 本延迟 + 线路加载耗时（1~2.5s），1.5s 延迟下约 4s 才就绪，用户按快一点就吃不到。
+         */
+        private const val PRELOAD_DELAY_FLIP_FLOP_MS = 600L
+
+        /**
+         * 待命失败后的静默期。
+         * 覆盖"用户在同一片频道来回翻"的整个时段；过期后自动放行重试。
+         */
+        private const val STANDBY_FAILED_TTL_MS = 300_000L
+
+        /**
+         * 待命播放器的缓冲水位。
+         *
+         * 它只需要"够接管"——缓冲到 [BUFFER_FOR_PLAYBACK_MS] 就判 READY 了（实测就绪耗时
+         * 0.6~4.7s，取决于该台近期是否被访问过，与水位无关）。沿用主播放器的 [MIN_BUFFER_MS]
+         * 会让它在就绪之后继续多拉约 7 秒直播数据，而频繁翻台时每次翻转都要释放它、
+         * 再为下一个台重拉一路，这些数据基本是白下的——这是"待命与主播放器抢带宽"的一部分。
+         *
+         * 但水位也不能压太低：接管瞬间主播放器继承的就是这份缓冲，压到 3s 会让刚出画的
+         * 头几秒几乎没有抗抖动余量（接管后主播放器才会按 10s 水位慢慢补回来）。
+         * 取 5s 作为折中。
+         */
+        private const val STANDBY_MIN_BUFFER_MS = 5_000
+        private const val STANDBY_MAX_BUFFER_MS = 10_000
+
+        /** 起播时间线的输出窗口：覆盖起播全过程，又不至于把后续直播分片全打出来 */
+        private const val TRACE_WINDOW_MS = 10_000L
 
         /** 软解码器优先的选择器（c2.android / OMX.google 为软件实现） */
         private val softwareFirstSelector: MediaCodecSelector =

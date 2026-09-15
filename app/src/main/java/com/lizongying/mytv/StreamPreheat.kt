@@ -33,8 +33,12 @@ object StreamPreheat {
     private const val TAG = "StreamPreheat"
     private const val UA = "Mozilla/5.0 (Linux; Android) my-tv"
 
-    /** 单轮最多预热几条：并发太多会与正在播放的流抢带宽 */
-    private const val MAX_TARGETS = 4
+    /**
+     * 单轮最多预热几条：并发太多会与正在播放的流抢带宽。
+     * 取 5 是为了容得下"最近邻居的两条候选线路"（4 个邻居 + 1 条额外候选），
+     * 否则多出来的那条会挤掉最远的邻居，覆盖反而变小。
+     */
+    private const val MAX_TARGETS = 5
 
     /** 并发度：握手是 IO 等待，2 路足够，再多意义有限 */
     private const val CONCURRENCY = 2
@@ -52,6 +56,16 @@ object StreamPreheat {
     /** 同一地址的预热冷却：连接池保活期内重复预热是白做 */
     private const val COOLDOWN_MS = 60_000L
 
+    /**
+     * 在途任务上限。
+     *
+     * 去重与冷却只挡得住"同一地址"，挡不住"地址各不相同"的洪流：连按换台时调用方
+     * 每次提交的都是新地址（相邻台在移动），实测连按 20 次会积压 20+ 个任务、
+     * 持续近 9 秒才消化完，而用户早已停手——这些握手正好与他要看的台抢带宽。
+     * 超限时直接放弃本轮：这些地址本就是"已经滚过去的台"。
+     */
+    private const val MAX_IN_FLIGHT = 8
+
     private val executor = Executors.newFixedThreadPool(CONCURRENCY)
 
     /** 正在预热中的地址，避免同一地址被反复提交 */
@@ -67,6 +81,12 @@ object StreamPreheat {
      */
     fun warm(urls: List<String>) {
         if (urls.isEmpty()) return
+        // 先挡洪流再入队：inFlight 只增不减（本轮全部完成才释放），
+        // 在途已满时提交只会把"没用的握手"排在"有用的握手"前面
+        if (inFlight.size >= MAX_IN_FLIGHT) {
+            Log.i(TAG, "preheat skipped: ${inFlight.size} in flight")
+            return
+        }
         val now = System.currentTimeMillis()
         val targets = urls.asSequence()
             .filter { it.isNotBlank() }
@@ -115,8 +135,12 @@ object StreamPreheat {
             .setConnectTimeoutMs(CONNECT_TIMEOUT_MS)
             .setReadTimeoutMs(READ_TIMEOUT_MS)
             .createDataSource()
+        // 已知落点时直接请求它：跳转本身也是一轮往返，能省则省
+        val target = ResolvedUrl.find(url) ?: url
         try {
-            source.open(DataSpec(Uri.parse(url)))
+            source.open(DataSpec(Uri.parse(target)))
+            // open() 之后 uri 已经是跟随跳转之后真正的地址，顺手记下来给播放器直接用
+            ResolvedUrl.remember(url, source.uri.toString())
             val buffer = ByteArray(8 * 1024)
             var total = 0L
             while (true) {
@@ -128,6 +152,10 @@ object StreamPreheat {
                     break
                 }
             }
+        } catch (e: Exception) {
+            // 走落点失败多半是它带了时效参数已过期：丢掉，下次回到原始地址重新解析
+            if (target != url) ResolvedUrl.forget(url)
+            throw e
         } finally {
             runCatching { source.close() }
         }
