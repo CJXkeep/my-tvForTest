@@ -946,8 +946,18 @@ object TVList {
      *
      * 过滤后一个不剩时（例如用户自己配的是纯地方台源）保留原样，
      * 否则用户会看到一个空列表而不知道发生了什么。
+     *
+     * **用户显式配置订阅源时直接跳过白名单**：内置默认源是"聚合源"，混着
+     * 游戏/购物台，白名单有用；而用户手动配置的源（含远程页保存）多数是
+     * 精心挑选的——只要命中一条 CCTV 就把其余频道全丢掉是反直觉的。
+     * 垃圾标题与屏蔽域名在解析阶段已独立清理，跳过白名单不会放进噪音。
      */
     private fun applyChannelFilter(result: LinkedHashMap<String, MutableList<TV>>) {
+        if (SP.iptvSourceUrl.isNotBlank()) {
+            Log.i(TAG, "user configured source, skip channel whitelist")
+            cleanEmptyGroups(result)
+            return
+        }
         val cctv = mutableListOf<TV>()
         val sat = mutableListOf<TV>()
         result.values.forEach { list ->

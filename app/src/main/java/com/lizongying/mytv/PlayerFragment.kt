@@ -177,7 +177,7 @@ class PlayerFragment : Fragment() {
         playerView!!.player?.addListener(playerListener)
         (playerView!!.player as? ExoPlayer)?.addAnalyticsListener(analyticsListener)
 
-        (activity as MainActivity).fragmentReady("PlayerFragment")
+        (activity as? MainActivity)?.fragmentReady("PlayerFragment")
         return _binding!!.root
     }
 
@@ -445,7 +445,7 @@ class PlayerFragment : Fragment() {
                 }
                 tvViewModel?.confirmSourceType()
                 tvViewModel?.resetAttempts()
-                (activity as MainActivity).isPlaying()
+                (activity as? MainActivity)?.isPlaying()
                 // 准备下一个频道。接管后可以更快开始（画面来自已缓冲充足的流）；
                 // 普通起播则要等一等，否则会和还在补缓冲的当前流抢带宽。
                 handler.removeCallbacks(preloadRunnable)
@@ -523,8 +523,9 @@ class PlayerFragment : Fragment() {
         // 记录本次是否走了落点：失败时据此决定要不要退回原始地址（见 retryOnError）
         resolvedUrlInUse = ResolvedUrl.find(vm.getVideoUrlCurrent()) != null
         pendingResolveUrl = vm.getVideoUrlCurrent()
+        val context = context ?: return
         (playerView?.player as? ExoPlayer)?.apply {
-            setMediaSource(buildMediaSource(vm))
+            setMediaSource(buildMediaSource(context, vm))
             prepare()
         }
     }
@@ -560,7 +561,7 @@ class PlayerFragment : Fragment() {
         val player = buildPlayer(ctx, softDecode, standby = true)
         player.playWhenReady = false                                     // 只缓冲：不出声、不渲染
         player.addListener(standbyListener)
-        player.setMediaSource(buildMediaSource(next))
+        player.setMediaSource(buildMediaSource(ctx, next))
         standbyStartAt = SystemClock.elapsedRealtime()
         player.prepare()
         standbyPlayer = player
@@ -657,13 +658,19 @@ class PlayerFragment : Fragment() {
             if (standbyChannelId >= 0) {
                 standbyFailed[standbyChannelId] = SystemClock.elapsedRealtime()
             }
+            // 必须显式 release：仅置空引用不会释放解码器、加载线程与连接，只能等 GC 兜底
+            standbyPlayer?.release()
             standbyPlayer = null
             standbyChannelId = -1
         }
     }
 
-    /** 按当前源类型构建 MediaSource，应用频道自定义 headers */
-    private fun buildMediaSource(tvViewModel: TVViewModel): MediaSource {
+    /**
+     * 按当前源类型构建 MediaSource，应用频道自定义 headers。
+     * context 由调用方传入：本函数可经看门狗/错误重试等异步路径触发，
+     * Fragment 可能已 detach，requireContext() 会抛 IllegalStateException。
+     */
+    private fun buildMediaSource(context: Context, tvViewModel: TVViewModel): MediaSource {
         // 优先用 302 落点：省掉一轮跳转往返（落点由 StreamPreheat 预热时顺手记下，见 ResolvedUrl）
         val url = ResolvedUrl.find(tvViewModel.getVideoUrlCurrent())
             ?: tvViewModel.getVideoUrlCurrent()
@@ -685,7 +692,7 @@ class PlayerFragment : Fragment() {
             .setDefaultRequestProperties(
                 headers.filterKeys { !it.equals("User-Agent", true) }
             )
-        val dataSourceFactory = DefaultDataSource.Factory(requireContext(), httpFactory)
+        val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
         val factory = DefaultMediaSourceFactory(dataSourceFactory)
             .setLoadErrorHandlingPolicy(loadErrorPolicy)
         val item = MediaItem.Builder().setUri(url).setMimeType(mime).build()
@@ -909,8 +916,11 @@ class PlayerFragment : Fragment() {
         }
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
+    override fun onDestroyView() {
+        super.onDestroyView()
+        // 在此释放播放器资源，与 onCreateView 中的构建配对：
+        // "view 销毁但 Fragment 保留"的场景（back stack、容器复用）里，
+        // 拖到 onDestroy 才释放会让 ExoPlayer 连同 Activity 引用与解码器一直存活
         handler.removeCallbacks(showLoadingRunnable)
         handler.removeCallbacks(watchdog)
         handler.removeCallbacks(preloadRunnable)
@@ -918,11 +928,17 @@ class PlayerFragment : Fragment() {
         playerView?.player?.removeListener(playerListener)
         (playerView?.player as? ExoPlayer)?.removeAnalyticsListener(analyticsListener)
         playerView?.player?.release()
+        playerView?.player = null
+        playerView = null
+        _binding = null
     }
 
-    override fun onDestroyView() {
-        super.onDestroyView()
-        _binding = null
+    override fun onDestroy() {
+        super.onDestroy()
+        // 兜底清理：onDestroyView 已释放时这些操作均为空操作（release 幂等）
+        releaseStandby()
+        playerView?.player?.release()
+        playerView = null
     }
 
     companion object {

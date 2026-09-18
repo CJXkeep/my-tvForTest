@@ -15,6 +15,7 @@ import java.util.zip.GZIPInputStream
 import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.TimeZone
+import java.util.concurrent.Executors
 
 /**
  * XMLTV 格式节目单存储（借鉴 my-tv-0）：
@@ -24,6 +25,9 @@ import java.util.TimeZone
  */
 object EpgStore {
     private const val TAG = "EpgStore"
+
+    /** 抓取/落盘专用单线程：同一时间只跑一个抓取任务，且复用线程（每次裸起 Thread 会并发堆积） */
+    private val fetchExecutor = Executors.newSingleThreadExecutor()
 
     // 后台线程写入、UI 线程读取，需保证可见性
     @Volatile
@@ -53,7 +57,7 @@ object EpgStore {
             if (onDone != null) Handler(Looper.getMainLooper()).post(onDone)
             return
         }
-        Thread {
+        fetchExecutor.execute {
             val merged = linkedMapOf<String, MutableList<EPG>>()
             var okCount = 0
             for (url in candidates) {
@@ -97,7 +101,7 @@ object EpgStore {
             }
             // 无论成功失败都回调：失败时无需刷新，成功时让列表副标题显示节目名
             if (onDone != null) Handler(Looper.getMainLooper()).post(onDone)
-        }.start()
+        }
     }
 
     /** 合并多源节目单：同频道按「标题 + 开始时间」去重 */

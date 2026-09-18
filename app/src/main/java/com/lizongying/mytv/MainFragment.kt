@@ -109,13 +109,16 @@ class MainFragment : Fragment() {
         return binding.root
     }
 
-    override fun onActivityCreated(savedInstanceState: Bundle?) {
-        super.onActivityCreated(savedInstanceState)
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
 
         lifecycleScope.launch {
-            // 优先用本地缓存：启动即可渲染并起播（秒开），不必等网络
+            // 优先用本地缓存：启动即可渲染并起播（秒开），不必等网络。
+            // context 在协程开始时取好：异步执行到此处时 Fragment 可能已 detach，
+            // requireContext() 会抛 IllegalStateException 导致协程静默失败
+            val appContext = context ?: return@launch
             val cached = withContext(Dispatchers.IO) {
-                EpgStore.initCache(requireContext())
+                EpgStore.initCache(appContext)
                 // 预热探活/降权记录（都是磁盘文件）：否则首次列表绑定会在主线程触发读盘
                 ChannelProbe.warmUp()
                 LineHealth.warmUp()
@@ -124,7 +127,7 @@ class MainFragment : Fragment() {
 
             if (cached != null) {
                 loadRows(cached)
-                (activity as MainActivity).fragmentReady("MainFragment")
+                (activity as? MainActivity)?.fragmentReady("MainFragment")
                 // 拉源 / EPG / 探活统一推迟到首帧之后，避免与起播抢带宽
                 scheduleStartupWork()
             } else {
@@ -132,7 +135,7 @@ class MainFragment : Fragment() {
                 (activity as? MainActivity)?.showInfoMessage("正在加载频道…")
                 val list = withContext(Dispatchers.IO) { TVList.load() }
                 loadRows(list)
-                (activity as MainActivity).fragmentReady("MainFragment")
+                (activity as? MainActivity)?.fragmentReady("MainFragment")
                 scheduleStartupWork()
                 notifyIfEmpty(list)
             }
@@ -529,7 +532,10 @@ class MainFragment : Fragment() {
                 if (tvViewModel.getTV().pid != "") {
                     Log.i(TAG, "request $title")
                     lifecycleScope.launch(Dispatchers.IO) {
-                        tvViewModel.let { Request.fetchData(it) }
+                        // fetchData 走网络：异常必须就地消化，
+                        // 否则协程静默死亡，频道会永远停在"加载中"
+                        runCatching { Request.fetchData(tvViewModel) }
+                            .onFailure { Log.e(TAG, "fetch data failed: ${it.message}") }
                     }
                     (activity as? MainActivity)?.showInfoFragment(tvViewModel)
                 } else {
@@ -552,27 +558,20 @@ class MainFragment : Fragment() {
 
     // ---------------- 线路切换 ----------------
 
-    fun prevSource() {
+    fun prevSource() = switchSourceBy(-1)
+
+    fun nextSource() = switchSourceBy(1)
+
+    /** 按方向切换线路（delta = ±1），供遥控器换线按键使用 */
+    private fun switchSourceBy(delta: Int) {
         view?.post {
             val tvViewModel = tvListViewModel.getTVViewModel(itemPosition) ?: return@post
             val size = tvViewModel.videoUrl.value?.size ?: 0
             if (size <= 1) return@post
-            val idx = ((tvViewModel.videoIndex.value ?: 0) - 1 + size) % size
+            val idx = ((tvViewModel.videoIndex.value ?: 0) + delta + size) % size
             tvViewModel.setVideoIndex(idx)
             tvViewModel.changed()
             // 必须放在 changed() 之后：change 观察者会刷新频道信息条，顺序反了会把线路提示顶掉
-            showSourceToast(tvViewModel, idx, size)
-        }
-    }
-
-    fun nextSource() {
-        view?.post {
-            val tvViewModel = tvListViewModel.getTVViewModel(itemPosition) ?: return@post
-            val size = tvViewModel.videoUrl.value?.size ?: 0
-            if (size <= 1) return@post
-            val idx = ((tvViewModel.videoIndex.value ?: 0) + 1) % size
-            tvViewModel.setVideoIndex(idx)
-            tvViewModel.changed()
             showSourceToast(tvViewModel, idx, size)
         }
     }

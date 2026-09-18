@@ -49,6 +49,9 @@ object LineHealth {
 
     private var loaded = false
 
+    /** 落盘单线程串行执行：并发写同一文件会交错损坏 */
+    private val persistExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
     /** 是否已判定为坏线（冷却期内才算） */
     fun isBad(url: String): Boolean {
         val h = ensureLoaded()[url] ?: return false
@@ -138,12 +141,12 @@ object LineHealth {
     private fun persistAsync() {
         val ctx = MyApplication.instance ?: return
         val snapshot = health
-        Thread {
+        persistExecutor.execute {
             try {
                 File(ctx.filesDir, FILE_NAME).writeText(Gson().toJson(snapshot))
             } catch (e: Exception) {
                 Log.e(TAG, "save line health failed", e)
             }
-        }.start()
+        }
     }
 }

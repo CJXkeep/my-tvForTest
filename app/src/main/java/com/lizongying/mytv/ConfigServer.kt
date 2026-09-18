@@ -24,6 +24,10 @@ class ConfigServer(private val context: Context) :
     private fun authorized(session: IHTTPSession): Boolean {
         // 先取令牌（会在缺失时生成），避免短路后令牌永远不生成
         val expected = SP.configToken
+        // 优先取请求头（不进 URL，避免令牌落进局域网设备日志/浏览器历史）；
+        // NanoHTTPD 的 headers key 一律小写。兼容 query 传参（老书签/直接拼地址的场景）
+        val header = session.headers["x-config-token"] ?: ""
+        if (header.isNotEmpty() && header == expected) return true
         val token = session.parameters["token"]?.firstOrNull() ?: ""
         return token.isNotEmpty() && token == expected
     }
@@ -161,20 +165,20 @@ class ConfigServer(private val context: Context) :
 
         private fun page(): String {
             val js = """
-                const T = new URLSearchParams(location.search).get('token') || '';
-                const q = s => s + (s.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(T);
-                fetch(q('/api/config')).then(r=>r.json()).then(j=>{
+                // 令牌只放请求头，不再拼进每个请求的 URL（避免落进日志/历史记录）
+                const h = { 'X-Config-Token': new URLSearchParams(location.search).get('token') || '' };
+                fetch('/api/config',{headers:h}).then(r=>r.json()).then(j=>{
                   src.value=j.source||'';epg.value=j.epg||'';qfirst.checked=!!j.qualityFirst;
                 });
                 function save(){
-                  fetch(q('/api/save'),{method:'POST',
-                    headers:{'Content-Type':'application/json'},
+                  fetch('/api/save',{method:'POST',
+                    headers:Object.assign({'Content-Type':'application/json'},h),
                     body:JSON.stringify({source:src.value,epg:epg.value,qualityFirst:qfirst.checked})
                   }).then(r=>r.text()).then(t=>{msg.innerText=t;});
                 }
                 function test(){
                   msg.innerText='测试中…';
-                  fetch(q('/api/test?source='+encodeURIComponent(src.value.trim())))
+                  fetch('/api/test?source='+encodeURIComponent(src.value.trim()),{headers:h})
                     .then(r=>r.json()).then(j=>{
                       msg.innerText = j.ok ? ('可用：'+j.groups+' 个分组 / '+j.channels+' 个频道')
                                            : ('不可用：'+j.message);
@@ -182,15 +186,15 @@ class ConfigServer(private val context: Context) :
                 }
                 function resetAll(){
                   if(!confirm('恢复默认设置？（订阅源与收藏会保留）')) return;
-                  fetch(q('/api/reset')).then(r=>r.text()).then(t=>{msg.innerText=t;});
+                  fetch('/api/reset',{headers:h}).then(r=>r.text()).then(t=>{msg.innerText=t;});
                 }
                 function crash(){
                   log.innerText='读取中…';
-                  fetch(q('/api/crash')).then(r=>r.text()).then(t=>{log.innerText=t;});
+                  fetch('/api/crash',{headers:h}).then(r=>r.text()).then(t=>{log.innerText=t;});
                 }
                 function sources(){
                   log.innerText='读取中…';
-                  fetch(q('/api/sources')).then(r=>r.json()).then(function(list){
+                  fetch('/api/sources',{headers:h}).then(r=>r.json()).then(function(list){
                     if(!list||!list.length){log.innerText='暂无数据（多启动几次后就有了）';return;}
                     log.innerText = list.map(function(s){
                       var head = '[' + (s.lastOk?'正常':'失败') + '] 成功率 ' + s.rate + '%  (' + s.success + '/' + s.attempts + ')'

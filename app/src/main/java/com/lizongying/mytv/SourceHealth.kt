@@ -44,6 +44,9 @@ object SourceHealth {
 
     private var loaded = false
 
+    /** 落盘单线程串行执行：并发写同一文件会交错损坏 */
+    private val persistExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
     /** 记录一次源加载结果：成功与失败都要记（失败才能看出源在退化） */
     @Synchronized
     fun record(source: String, ok: Boolean, ms: Long, channels: Int = 0, via: String = "") {
@@ -116,12 +119,12 @@ object SourceHealth {
     private fun persistAsync() {
         val ctx = MyApplication.instance ?: return
         val snapshot = stats
-        Thread {
+        persistExecutor.execute {
             try {
                 File(ctx.filesDir, FILE_NAME).writeText(Gson().toJson(snapshot))
             } catch (e: Exception) {
                 Log.e(TAG, "save source health failed", e)
             }
-        }.start()
+        }
     }
 }

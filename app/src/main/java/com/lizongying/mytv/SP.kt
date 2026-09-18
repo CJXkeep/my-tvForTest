@@ -85,7 +85,8 @@ object SP {
             val existing = sp.getString(KEY_CONFIG_TOKEN, "") ?: ""
             if (existing.isNotEmpty()) return existing
             val chars = "abcdefghijkmnpqrstuvwxyz23456789"
-            val generated = (1..6)
+            // 8 位（约 33^8 ≈ 1.4 万亿组合）：局域网暴力枚举在合理时间内不可行
+            val generated = (1..8)
                 .map { chars[kotlin.random.Random.nextInt(chars.length)] }
                 .joinToString("")
             sp.edit().putString(KEY_CONFIG_TOKEN, generated).apply()

@@ -28,14 +28,15 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
     /** 首帧播放是否已启动，防止就绪信号重复触发 */
     private var playbackStarted = false
 
-    private val playerFragment = PlayerFragment()
-    private val mainFragment = MainFragment()
-    private val infoFragment = InfoFragment()
-    private val channelFragment = ChannelFragment()
+    // 全部为 var：Activity 重建（配置变更/进程回收恢复）时会被 findFragmentByTag 找回的实例覆盖
+    private var playerFragment = PlayerFragment()
+    private var mainFragment = MainFragment()
+    private var infoFragment = InfoFragment()
+    private var channelFragment = ChannelFragment()
     private var timeFragment = TimeFragment()
-    private val settingFragment = SettingFragment()
-    private val errorFragment = ErrorFragment()
-    private val sourceFragment = SourceFragment()
+    private var settingFragment = SettingFragment()
+    private var errorFragment = ErrorFragment()
+    private var sourceFragment = SourceFragment()
 
     private var doubleBackToExitPressedOnce = false
 
@@ -44,6 +45,16 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
     private lateinit var gestureDetector: GestureDetector
 
     private val handler = Handler(Looper.getMainLooper())
+
+    // Fragment 恢复 tag：与 onCreate 中 add() / DialogFragment.show() 的 tag 一一对应
+    private val TAG_PLAYER = "player"
+    private val TAG_TIME = "time"
+    private val TAG_INFO = "info"
+    private val TAG_CHANNEL = "channel"
+    private val TAG_MAIN = "main"
+    private val TAG_ERROR = "error"
+    private val TAG_SETTING = "setting"
+    private val TAG_SOURCE = "source"
 
     /** 连续不可播的频道数：达到上限就停下提示，避免无意义地一直自动跳过 */
     private var unavailableStreak = 0
@@ -90,13 +101,26 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
 
         if (savedInstanceState == null) {
             supportFragmentManager.beginTransaction()
-                .add(R.id.main_browse_fragment, playerFragment)
-                .add(R.id.main_browse_fragment, timeFragment)
-                .add(R.id.main_browse_fragment, infoFragment)
-                .add(R.id.main_browse_fragment, channelFragment)
-                .add(R.id.main_browse_fragment, mainFragment)
+                .add(R.id.main_browse_fragment, playerFragment, TAG_PLAYER)
+                .add(R.id.main_browse_fragment, timeFragment, TAG_TIME)
+                .add(R.id.main_browse_fragment, infoFragment, TAG_INFO)
+                .add(R.id.main_browse_fragment, channelFragment, TAG_CHANNEL)
+                .add(R.id.main_browse_fragment, mainFragment, TAG_MAIN)
                 .hide(mainFragment)
                 .commit()
+        } else {
+            // 配置变更/进程回收后重建：FragmentManager 恢复的是旧实例，
+            // 必须用它覆盖字段里新创建的实例——否则 play()/reload()/showInfoFragment
+            // 会作用在从未 attach 的实例上，全部静默失效
+            val fm = supportFragmentManager
+            playerFragment = fm.findFragmentByTag(TAG_PLAYER) as? PlayerFragment ?: playerFragment
+            timeFragment = fm.findFragmentByTag(TAG_TIME) as? TimeFragment ?: timeFragment
+            infoFragment = fm.findFragmentByTag(TAG_INFO) as? InfoFragment ?: infoFragment
+            channelFragment = fm.findFragmentByTag(TAG_CHANNEL) as? ChannelFragment ?: channelFragment
+            mainFragment = fm.findFragmentByTag(TAG_MAIN) as? MainFragment ?: mainFragment
+            errorFragment = fm.findFragmentByTag(TAG_ERROR) as? ErrorFragment ?: errorFragment
+            settingFragment = fm.findFragmentByTag(TAG_SETTING) as? SettingFragment ?: settingFragment
+            sourceFragment = fm.findFragmentByTag(TAG_SOURCE) as? SourceFragment ?: sourceFragment
         }
         gestureDetector = GestureDetector(this, GestureListener())
 
@@ -634,7 +658,7 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
         doubleBackToExitPressedOnce = true
         Toast.makeText(this, "再按一次退出", Toast.LENGTH_SHORT).show()
 
-        Handler(Looper.getMainLooper()).postDelayed({
+        handler.postDelayed({
             doubleBackToExitPressedOnce = false
         }, 2000)
     }
@@ -786,13 +810,16 @@ class MainActivity : FragmentActivity(), Request.RequestListener {
 
     override fun onDestroy() {
         super.onDestroy()
+        // 清掉所有待执行回调：时钟 tick 每秒自调度一次，不清理会在销毁后
+        // 继续持有 Activity 引用并空转，拖住整棵 Fragment 树
+        handler.removeCallbacksAndMessages(null)
         Request.onDestroy()
     }
 
     override fun onRequestFinished(message: String?) {
         if (message != null && !errorFragment.isVisible) {
             supportFragmentManager.beginTransaction()
-                .add(R.id.main_browse_fragment, errorFragment)
+                .add(R.id.main_browse_fragment, errorFragment, TAG_ERROR)
                 .commitNow()
             errorFragment.setErrorContent(message)
         }

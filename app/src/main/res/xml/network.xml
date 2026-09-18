@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
+    <!-- 直播源大量为 http 明文地址，明文必须保留；
+         HTTPS 一律走系统信任链，不信任用户安装的证书（防抓包/中间人替换播放地址与 EPG 内容） -->
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <certificates src="system" />
-            <certificates src="user" />
         </trust-anchors>
     </base-config>
 </network-security-config>

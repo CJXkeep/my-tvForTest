@@ -37,6 +37,20 @@ object ChannelProbe {
     private const val FILE_NAME = "probe.json"
     private const val UA = "Mozilla/5.0 (Linux; Android) my-tv"
 
+    /** 探测专用客户端：单例复用连接池与 TLS 会话（每轮新建会把握手成果全部丢掉） */
+    private val probeClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            // 跨洲线路实测 connect 可达 1.8s，且要经 1~4 次 302 跳转：
+            // 超时定太紧会把好线路误判为"探测失败"，这里给足余量
+            .connectTimeout(4, TimeUnit.SECONDS)
+            .readTimeout(4, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .build()
+    }
+
+    /** 落盘专用单线程：串行化写 probe.json，并发写同一文件会交错损坏 */
+    private val persistExecutor = Executors.newSingleThreadExecutor()
+
     /**
      * 单次最多探测线路数。
      * 两级探测每条线路要发 1~3 个请求，上限用于兜底，防止超大分组把请求打爆。
@@ -326,13 +340,7 @@ object ChannelProbe {
 
         Thread {
             try {
-                val client = OkHttpClient.Builder()
-                    // 跨洲线路实测 connect 可达 1.8s，且要经 1~4 次 302 跳转：
-                    // 超时定太紧会把好线路误判为"探测失败"，这里给足余量
-                    .connectTimeout(4, TimeUnit.SECONDS)
-                    .readTimeout(4, TimeUnit.SECONDS)
-                    .followRedirects(true)
-                    .build()
+                val client = probeClient
                 val pool = Executors.newFixedThreadPool(CONCURRENCY)
                 // 只装本轮结果：丢弃判定必须基于"本轮"，
                 // 否则历史里已有的 ok 会掩盖"这一轮其实全失败"，断网时反而把整表标死
@@ -573,25 +581,19 @@ object ChannelProbe {
         }
     }
 
+    /** 落盘统一提交到单线程 executor：探测线程与主线程都调它，串行执行才不会写坏文件 */
     private fun persist() {
         val ctx = MyApplication.instance ?: return
-        try {
-            File(ctx.filesDir, FILE_NAME).writeText(Gson().toJson(scores))
-        } catch (e: Exception) {
-            Log.e(TAG, "save probe result failed", e)
-        }
-    }
-
-    /** 异步落盘：供主线程调用（如播放回调记录分辨率），避免在主线程做文件写入 */
-    private fun persistAsync() {
-        val ctx = MyApplication.instance ?: return
         val snapshot = scores
-        Thread {
+        persistExecutor.execute {
             try {
                 File(ctx.filesDir, FILE_NAME).writeText(Gson().toJson(snapshot))
             } catch (e: Exception) {
                 Log.e(TAG, "save probe result failed", e)
             }
-        }.start()
+        }
     }
+
+    /** 异步落盘：供主线程调用（如播放回调记录分辨率），避免在主线程做文件写入 */
+    private fun persistAsync() = persist()
 }
