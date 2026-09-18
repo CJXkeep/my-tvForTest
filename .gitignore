@@ -17,3 +17,9 @@ local.properties
 /path/
 *.apk
 .tmp_*
+
+# 签名密钥：本地保留，严禁入库
+keystore/
+keystore.properties
+*.jks
+*.keystore
